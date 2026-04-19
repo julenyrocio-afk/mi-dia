@@ -525,6 +525,7 @@ const CSS = `
   @keyframes fadein { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:none; } }
 
   .app-root {
+    width: 100%;
     max-width: 480px;
     margin: 0 auto;
     min-height: 100svh;
