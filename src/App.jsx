@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 
-const STORAGE_KEY = "planner-data-v3";
+const STORAGE_KEY = "planner-data-v4";
 
 // ── DATE HELPERS ──────────────────────────────────────────────────────────────
 const getTodayStr = () => {
@@ -23,6 +23,16 @@ const formatMoney = (n) => {
   return (n<0?"-":"")+int.replace(/\B(?=(\d{3})+(?!\d))/g,".")+","+(dec||"00")+" €";
 };
 const uid = () => Date.now().toString(36)+Math.random().toString(36).slice(2,7);
+
+const formatNoteDate = (ts) => {
+  const d = new Date(ts);
+  const today = new Date();
+  const diff = Math.floor((today - d) / 86400000);
+  if (diff === 0) return "Hoy";
+  if (diff === 1) return "Ayer";
+  if (diff < 7) return `Hace ${diff} días`;
+  return d.toLocaleDateString("es-ES", { day:"numeric", month:"short", year: d.getFullYear()!==today.getFullYear()?"numeric":undefined });
+};
 
 const CATEGORIES = {
   expense:["🛒 Compras","🍽️ Comida","🚗 Transporte","🏠 Hogar","🎮 Ocio","💊 Salud","📦 Otros"],
@@ -57,46 +67,63 @@ export default function App() {
   const [newTask,setNewTask]=useState("");
   const [showEventForm,setShowEventForm]=useState(false);
   const [editingEvent,setEditingEvent]=useState(null);
+  const [activeNote,setActiveNote]=useState(null); // null=list, id=editing
   const taskInputRef=useRef(null);
 
   useEffect(()=>{
     (async()=>{
       try{
         const r=await window.storage.get(STORAGE_KEY);
-        if(r){const p=JSON.parse(r.value);if(!p.events)p.events=[];setData(p);}
-        else setData({tasks:{},transactions:{},events:[]});
-      }catch{setData({tasks:{},transactions:{},events:[]});}
+        if(r){
+          const p=JSON.parse(r.value);
+          if(!p.events) p.events=[];
+          if(!p.notes) p.notes=[];
+          setData(p);
+        } else {
+          setData({tasks:{},transactions:{},events:[],notes:[]});
+        }
+      }catch{ setData({tasks:{},transactions:{},events:[],notes:[]}); }
       setLoading(false);
     })();
   },[]);
 
   const save=useCallback(async(nd)=>{
     setData(nd);
-    try{await window.storage.set(STORAGE_KEY,JSON.stringify(nd));}catch(e){console.error(e);}
+    try{ await window.storage.set(STORAGE_KEY,JSON.stringify(nd)); }catch(e){ console.error(e); }
   },[]);
 
-  // carry-over pending tasks
+  // CARRY-OVER: every time data changes, collect all pending tasks from REAL past
+  // days (strictly before today) and move them to today if not already there.
+  // This intentionally runs on every data change so adding a task to a past day
+  // while navigating gets picked up immediately when returning to today.
   useEffect(()=>{
-    if(!data)return;
-    const today=selectedDate;
-    const allDates=Object.keys(data.tasks).filter(d=>d<today).sort();
-    let carried=[];
-    for(const d of allDates){
-      const pending=(data.tasks[d]||[]).filter(t=>!t.done);
-      carried=[...carried,...pending.map(t=>({...t,carriedFrom:t.carriedFrom||d}))];
-    }
-    if(!carried.length)return;
-    const existing=data.tasks[today]||[];
-    const existingIds=new Set(existing.map(t=>t.id));
-    const toAdd=carried.filter(t=>!existingIds.has(t.id));
-    if(!toAdd.length)return;
-    const newTasks={...data.tasks};
-    for(const d of allDates)newTasks[d]=(newTasks[d]||[]).filter(t=>t.done);
-    newTasks[today]=[...toAdd,...existing];
-    save({...data,tasks:newTasks});
-  },[data,selectedDate,save]);
+    if(!data) return;
+    const today = getTodayStr();
 
-  if(loading)return(
+    // Only consider dates strictly before today (real date, not selected date)
+    const pastDates = Object.keys(data.tasks).filter(d => d < today).sort();
+    let carried = [];
+    for(const d of pastDates){
+      const pending = (data.tasks[d]||[]).filter(t=>!t.done);
+      carried = [...carried, ...pending.map(t=>({...t, carriedFrom: t.carriedFrom||d}))];
+    }
+    if(!carried.length) return;
+
+    const existing = data.tasks[today]||[];
+    const existingIds = new Set(existing.map(t=>t.id));
+    const toAdd = carried.filter(t=>!existingIds.has(t.id));
+    if(!toAdd.length) return;
+
+    const newTasks = {...data.tasks};
+    for(const d of pastDates) newTasks[d] = (newTasks[d]||[]).filter(t=>t.done);
+    newTasks[today] = [...toAdd, ...existing];
+
+    // Use functional update to avoid stale closure loop
+    save({...data, tasks: newTasks});
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[JSON.stringify(data?.tasks)]);
+
+  if(loading) return(
     <div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100svh",background:"#09080a"}}>
       <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:14}}>
         <div style={{width:28,height:28,borderRadius:"50%",border:"2px solid rgba(240,168,50,0.2)",borderTopColor:"#f0a832",animation:"spin 1s linear infinite"}}/>
@@ -109,7 +136,7 @@ export default function App() {
   const todayTx=(data.transactions[selectedDate]||[]);
 
   const addTask=()=>{
-    if(!newTask.trim())return;
+    if(!newTask.trim()) return;
     const task={id:uid(),text:newTask.trim(),done:false,createdAt:selectedDate};
     const nt={...data.tasks};
     nt[selectedDate]=[...(nt[selectedDate]||[]),task];
@@ -143,6 +170,23 @@ export default function App() {
     save({...data,events:ne}); setShowEventForm(false); setEditingEvent(null);
   };
   const deleteEvent=(id)=>save({...data,events:data.events.filter(e=>e.id!==id)});
+
+  // Notes CRUD
+  const createNote=()=>{
+    const note={id:uid(),title:"",body:"",updatedAt:Date.now()};
+    const newNotes=[note,...(data.notes||[])];
+    save({...data,notes:newNotes});
+    setActiveNote(note.id);
+  };
+  const updateNote=(id,fields)=>{
+    const newNotes=(data.notes||[]).map(n=>n.id===id?{...n,...fields,updatedAt:Date.now()}:n);
+    save({...data,notes:newNotes});
+  };
+  const deleteNote=(id)=>{
+    save({...data,notes:(data.notes||[]).filter(n=>n.id!==id)});
+    setActiveNote(null);
+  };
+
   const navigateDate=(dir)=>setSelectedDate(addDays(selectedDate,dir));
   const isToday=selectedDate===getTodayStr();
 
@@ -156,6 +200,7 @@ export default function App() {
   const completedCount=todayTasks.filter(t=>t.done).length;
   const upcomingEvents=data.events.filter(e=>e.date>=getTodayStr()).length;
   const fmt=formatDate(selectedDate);
+  const showDateHeader = activeTab!=="agenda" && activeTab!=="notes";
 
   return (
     <div className="app-root">
@@ -171,7 +216,7 @@ export default function App() {
           <span className="header-meta">{fmt.year}</span>
         </div>
 
-        {activeTab !== "agenda" && (
+        {showDateHeader && (
           <div className="date-hero">
             <button className="date-nav-btn" onClick={()=>navigateDate(-1)}>‹</button>
             <div className="date-center">
@@ -189,17 +234,30 @@ export default function App() {
             <button className="date-nav-btn" onClick={()=>navigateDate(1)}>›</button>
           </div>
         )}
-        {activeTab === "agenda" && (
+        {activeTab==="agenda" && (
           <div style={{paddingBottom:4}}>
             <div className="date-big" style={{fontSize:22}}>Agenda</div>
-            <div className="date-sub">{upcomingEvents > 0 ? `${upcomingEvents} próximos` : "Sin eventos próximos"}</div>
+            <div className="date-sub">{upcomingEvents>0?`${upcomingEvents} próximos`:"Sin eventos próximos"}</div>
+          </div>
+        )}
+        {activeTab==="notes" && (
+          <div style={{paddingBottom:4}}>
+            <div className="date-big" style={{fontSize:22}}>
+              {activeNote ? (data.notes||[]).find(n=>n.id===activeNote)?.title||"Nueva nota" : "Notas"}
+            </div>
+            <div className="date-sub">
+              {activeNote
+                ? <button className="today-chip" onClick={()=>setActiveNote(null)}>← Volver</button>
+                : `${(data.notes||[]).length} nota${(data.notes||[]).length!==1?"s":""}`
+              }
+            </div>
           </div>
         )}
         <div className="header-divider"/>
       </header>
 
       {/* CONTENT */}
-      <main className="app-scroll" key={activeTab}>
+      <main className="app-scroll" key={activeTab+(activeNote||"")}>
         {activeTab==="tasks" && (
           <TasksView tasks={todayTasks} newTask={newTask} setNewTask={setNewTask}
             addTask={addTask} toggleTask={toggleTask} deleteTask={deleteTask} taskInputRef={taskInputRef}/>
@@ -218,15 +276,30 @@ export default function App() {
             showTxForm={showTxForm} setShowTxForm={setShowTxForm} txType={txType} setTxType={setTxType}
             addTransaction={addTransaction} deleteTransaction={deleteTransaction}/>
         )}
+        {activeTab==="notes" && (
+          activeNote
+            ? <NoteEditor
+                note={(data.notes||[]).find(n=>n.id===activeNote)}
+                onUpdate={updateNote}
+                onDelete={deleteNote}
+                onBack={()=>setActiveNote(null)}/>
+            : <NotesListView
+                notes={data.notes||[]}
+                onCreate={createNote}
+                onOpen={setActiveNote}
+                onDelete={deleteNote}/>
+        )}
       </main>
 
       {/* BOTTOM NAV */}
       <nav className="bottom-nav">
-        <NavBtn id="tasks" label="Tareas" icon="✦" active={activeTab==="tasks"} onClick={setActiveTab}
+        <NavBtn id="tasks" label="Tareas" icon="✦" active={activeTab==="tasks"} onClick={(id)=>{setActiveTab(id);}}
           badge={todayTasks.length>0?`${completedCount}/${todayTasks.length}`:null}/>
-        <NavBtn id="agenda" label="Agenda" icon="◈" active={activeTab==="agenda"} onClick={setActiveTab}
+        <NavBtn id="agenda" label="Agenda" icon="◈" active={activeTab==="agenda"} onClick={(id)=>{setActiveTab(id);}}
           badge={upcomingEvents>0?upcomingEvents:null}/>
-        <NavBtn id="finance" label="Finanzas" icon="◎" active={activeTab==="finance"} onClick={setActiveTab}/>
+        <NavBtn id="notes" label="Notas" icon="✎" active={activeTab==="notes"} onClick={(id)=>{setActiveTab(id);setActiveNote(null);}}
+          badge={(data.notes||[]).length>0?(data.notes||[]).length:null}/>
+        <NavBtn id="finance" label="Finanzas" icon="◎" active={activeTab==="finance"} onClick={(id)=>{setActiveTab(id);}}/>
       </nav>
     </div>
   );
@@ -249,7 +322,7 @@ function TasksView({tasks,newTask,setNewTask,addTask,toggleTask,deleteTask,taskI
   const pct=tasks.length?(done.length/tasks.length)*100:0;
   const allDone=tasks.length>0&&done.length===tasks.length;
   return(
-    <div>
+    <div style={{width:"100%"}}>
       <div className="task-input-wrap">
         <input ref={taskInputRef} className="task-input" type="text"
           placeholder="Nueva tarea…" value={newTask}
@@ -263,7 +336,7 @@ function TasksView({tasks,newTask,setNewTask,addTask,toggleTask,deleteTask,taskI
             <div className="prog-fill" style={{width:`${pct}%`}}/>
           </div>
           <span className="prog-label">
-            {allDone ? "✦ completado" : `${done.length}/${tasks.length}`}
+            {allDone?"✦ completado":`${done.length}/${tasks.length}`}
           </span>
         </div>
       )}
@@ -299,6 +372,91 @@ function TaskCard({task,onToggle,onDelete}){
   );
 }
 
+// ── NOTES VIEW ────────────────────────────────────────────────────────────────
+function NotesListView({notes,onCreate,onOpen,onDelete}){
+  const sorted=[...notes].sort((a,b)=>b.updatedAt-a.updatedAt);
+  return(
+    <div style={{width:"100%"}}>
+      <button className="add-event-btn" style={{borderColor:"rgba(240,168,50,0.2)",color:"#f0a832",background:"rgba(240,168,50,0.08)"}} onClick={onCreate}>
+        + Nueva nota
+      </button>
+      {sorted.length>0 ? (
+        <div className="notes-list">
+          {sorted.map(note=>(
+            <div key={note.id} className="note-card" onClick={()=>onOpen(note.id)}>
+              <div className="note-card-inner">
+                <div className="note-card-title">{note.title||"Sin título"}</div>
+                <div className="note-card-preview">{note.body ? note.body.split("\n")[0].slice(0,80) : "Toca para editar…"}</div>
+                <div className="note-card-date">{formatNoteDate(note.updatedAt)}</div>
+              </div>
+              <button className="note-del-btn" onClick={e=>{e.stopPropagation();onDelete(note.id);}}>×</button>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <Empty glyph="✎" txt="Sin notas" sub="Crea tu primera nota arriba"/>
+      )}
+    </div>
+  );
+}
+
+function NoteEditor({note,onUpdate,onDelete,onBack}){
+  const [title,setTitle]=useState(note?.title||"");
+  const [body,setBody]=useState(note?.body||"");
+  const saveTimeout=useRef(null);
+
+  const handleTitle=(v)=>{
+    setTitle(v);
+    clearTimeout(saveTimeout.current);
+    saveTimeout.current=setTimeout(()=>onUpdate(note.id,{title:v,body}),600);
+  };
+  const handleBody=(v)=>{
+    setBody(v);
+    clearTimeout(saveTimeout.current);
+    saveTimeout.current=setTimeout(()=>onUpdate(note.id,{title,body:v}),600);
+  };
+
+  const handleSave=()=>{
+    clearTimeout(saveTimeout.current);
+    onUpdate(note.id,{title,body});
+    onBack();
+  };
+
+  if(!note) return null;
+  return(
+    <div style={{width:"100%",display:"flex",flexDirection:"column",gap:12}}>
+      <input
+        className="note-title-input"
+        type="text"
+        placeholder="Título…"
+        value={title}
+        onChange={e=>handleTitle(e.target.value)}
+        autoFocus
+      />
+      <textarea
+        className="note-body-input"
+        placeholder="Escribe aquí tu nota…"
+        value={body}
+        onChange={e=>handleBody(e.target.value)}
+      />
+      <div style={{display:"flex",gap:8}}>
+        <button
+          onClick={handleSave}
+          style={{flex:1,padding:"11px",borderRadius:8,border:"none",background:"linear-gradient(135deg,#f0a832,#e08820)",color:"#09080a",fontSize:14,fontWeight:600,fontFamily:"'Outfit',sans-serif",cursor:"pointer"}}
+        >
+          Guardar nota
+        </button>
+        <button
+          onClick={()=>{ if(window.confirm("¿Eliminar esta nota?")) onDelete(note.id); }}
+          style={{padding:"11px 14px",borderRadius:8,border:"1px solid rgba(248,113,113,0.2)",background:"rgba(248,113,113,0.06)",color:"#f87171",fontSize:18,fontFamily:"'Outfit',sans-serif",cursor:"pointer"}}
+        >
+          🗑
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ── AGENDA VIEW ───────────────────────────────────────────────────────────────
 function AgendaView({events,onAdd,onEdit,onDelete,showForm,editingEvent,onSave,onCancel}){
   const today=getTodayStr();
@@ -307,7 +465,7 @@ function AgendaView({events,onAdd,onEdit,onDelete,showForm,editingEvent,onSave,o
   const grouped={};
   for(const ev of upcoming){if(!grouped[ev.date])grouped[ev.date]=[];grouped[ev.date].push(ev);}
   return(
-    <div>
+    <div style={{width:"100%"}}>
       {showForm
         ?<EventForm event={editingEvent} onSave={onSave} onCancel={onCancel}/>
         :<button className="add-event-btn" onClick={onAdd}>Nuevo evento</button>
@@ -396,7 +554,7 @@ function FinanceView({transactions,totalIncome,totalExpense,balance,monthIncome,
   const mx=Math.max(monthIncome,monthExpense)||1;
   const balColor=balance>=0?"#60b8f0":"#fbbf24";
   return(
-    <div>
+    <div style={{width:"100%"}}>
       <div className="kpi-row">
         <div className="kpi-card" style={{"--c":"#2dd4a0"}}>
           <div className="kpi-arrow" style={{color:"#2dd4a0"}}>▲</div>
@@ -519,6 +677,7 @@ const CSS = `
     color: #c8c0b0;
     font-family: 'Outfit', sans-serif;
     -webkit-font-smoothing: antialiased;
+    width: 100%;
   }
 
   @keyframes spin { to { transform: rotate(360deg); } }
@@ -536,6 +695,7 @@ const CSS = `
 
   /* HEADER */
   .app-header {
+    width: 100%;
     padding: 20px 20px 0;
     background: #09080a;
     position: sticky;
@@ -566,7 +726,7 @@ const CSS = `
   }
   .date-hero {
     display: flex; align-items: center; gap: 10px;
-    margin-bottom: 16px;
+    margin-bottom: 16px; width: 100%;
   }
   .date-nav-btn {
     background: rgba(255,255,255,0.04);
@@ -607,6 +767,7 @@ const CSS = `
   /* SCROLL AREA */
   .app-scroll {
     flex: 1;
+    width: 100%;
     padding: 20px 20px 100px;
     overflow-y: auto;
     animation: fadein 0.2s ease;
@@ -636,7 +797,7 @@ const CSS = `
   .nav-icon-wrap { font-size: 18px; line-height: 1; }
   .nav-label { font-size: 10px; letter-spacing: 0.05em; font-weight: 500; }
   .nav-badge {
-    position: absolute; top: 0; right: 22%;
+    position: absolute; top: 0; right: 18%;
     background: #f0a832; color: #09080a;
     font-size: 9px; font-weight: 700;
     padding: 1px 5px; border-radius: 10px;
@@ -645,7 +806,7 @@ const CSS = `
 
   /* TASKS */
   .task-input-wrap {
-    display: flex; gap: 8px; margin-bottom: 16px;
+    display: flex; gap: 8px; margin-bottom: 16px; width: 100%;
   }
   .task-input {
     flex: 1; padding: 12px 14px;
@@ -653,7 +814,7 @@ const CSS = `
     border: 1px solid rgba(255,255,255,0.07);
     border-radius: 10px; color: #e8dcc8;
     font-size: 14px; font-family: 'Outfit', sans-serif;
-    outline: none;
+    outline: none; min-width: 0;
   }
   .task-input::placeholder { color: #3a3630; }
   .task-add-btn {
@@ -662,7 +823,7 @@ const CSS = `
     border: 1px solid rgba(240,168,50,0.2);
     color: #f0a832; font-size: 22px; cursor: pointer;
     display: flex; align-items: center; justify-content: center;
-    transition: all 0.2s;
+    transition: all 0.2s; flex-shrink: 0;
   }
   .task-add-btn.active {
     background: #f0a832; color: #09080a;
@@ -670,7 +831,7 @@ const CSS = `
   }
   .progress-row {
     display: flex; align-items: center; gap: 10px;
-    margin-bottom: 20px;
+    margin-bottom: 20px; width: 100%;
   }
   .prog-track {
     flex: 1; height: 3px;
@@ -688,7 +849,7 @@ const CSS = `
     font-size: 11px; color: #5a5248;
     white-space: nowrap;
   }
-  .task-section { margin-bottom: 24px; }
+  .task-section { margin-bottom: 24px; width: 100%; }
   .sec-label {
     font-family: 'DM Mono', monospace;
     font-size: 10px; font-weight: 400;
@@ -700,8 +861,7 @@ const CSS = `
     padding: 11px 12px; border-radius: 10px;
     background: rgba(255,255,255,0.025);
     border: 1px solid rgba(255,255,255,0.04);
-    margin-bottom: 6px;
-    transition: background 0.15s;
+    margin-bottom: 6px; width: 100%;
   }
   .check-btn {
     background: none; border: none; cursor: pointer;
@@ -720,7 +880,7 @@ const CSS = `
     background-position: center;
     background-size: 10px;
   }
-  .task-body { flex: 1; display: flex; flex-direction: column; gap: 2px; }
+  .task-body { flex: 1; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
   .task-txt { font-size: 14px; color: #c8c0b0; line-height: 1.4; }
   .task-txt.done { text-decoration: line-through; color: #3a3630; }
   .carry-tag {
@@ -730,9 +890,59 @@ const CSS = `
   .task-del {
     background: none; border: none; color: #2a2620;
     font-size: 18px; cursor: pointer; padding: 0 4px;
-    transition: color 0.15s;
+    transition: color 0.15s; flex-shrink: 0;
   }
   .task-del:hover { color: #f87171; }
+
+  /* NOTES */
+  .notes-list { display: flex; flex-direction: column; gap: 8px; width: 100%; }
+  .note-card {
+    display: flex; align-items: stretch;
+    background: rgba(255,255,255,0.025);
+    border: 1px solid rgba(255,255,255,0.04);
+    border-radius: 10px; overflow: hidden;
+    cursor: pointer; transition: background 0.15s; width: 100%;
+  }
+  .note-card:hover { background: rgba(255,255,255,0.04); }
+  .note-card-inner {
+    flex: 1; padding: 12px 14px;
+    display: flex; flex-direction: column; gap: 3px; min-width: 0;
+  }
+  .note-card-title {
+    font-size: 14px; font-weight: 600; color: #e8dcc8;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .note-card-preview {
+    font-size: 12px; color: #5a5248;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .note-card-date {
+    font-family: 'DM Mono', monospace;
+    font-size: 10px; color: #3a3630; margin-top: 2px;
+  }
+  .note-del-btn {
+    background: none; border: none; border-left: 1px solid rgba(255,255,255,0.04);
+    color: #2a2620; font-size: 18px; cursor: pointer;
+    padding: 0 14px; transition: color 0.15s; flex-shrink: 0;
+  }
+  .note-del-btn:hover { color: #f87171; background: rgba(248,113,113,0.06); }
+  .note-title-input {
+    width: 100%; padding: 10px 0;
+    background: transparent;
+    border: none; border-bottom: 1px solid rgba(255,255,255,0.08);
+    color: #e8dcc8; font-size: 20px; font-weight: 600;
+    font-family: 'Outfit', sans-serif; outline: none;
+  }
+  .note-title-input::placeholder { color: #3a3630; }
+  .note-body-input {
+    width: 100%; min-height: 55vh;
+    padding: 14px 0;
+    background: transparent; border: none;
+    color: #c8c0b0; font-size: 15px; line-height: 1.7;
+    font-family: 'Outfit', sans-serif; outline: none;
+    resize: none;
+  }
+  .note-body-input::placeholder { color: #3a3630; }
 
   /* AGENDA */
   .add-event-btn {
@@ -745,11 +955,10 @@ const CSS = `
     cursor: pointer; margin-bottom: 20px;
     letter-spacing: 0.02em;
   }
-  .agenda-group { margin-bottom: 16px; }
+  .agenda-group { margin-bottom: 16px; width: 100%; }
   .agenda-date-row {
     display: flex; justify-content: space-between;
-    align-items: center;
-    padding: 4px 2px 6px;
+    align-items: center; padding: 4px 2px 6px;
   }
   .agenda-date-txt { font-size: 13px; font-weight: 600; color: #f0a832; }
   .agenda-days-tag {
@@ -763,7 +972,7 @@ const CSS = `
     padding: 12px; border-radius: 10px;
     background: rgba(255,255,255,0.025);
     border: 1px solid rgba(255,255,255,0.04);
-    margin-bottom: 6px;
+    margin-bottom: 6px; width: 100%;
   }
   .ev-icon { font-size: 22px; flex-shrink: 0; }
   .ev-body { flex: 1; min-width: 0; }
@@ -774,7 +983,7 @@ const CSS = `
     background: rgba(255,255,255,0.04);
     padding: 1px 7px; border-radius: 6px;
   }
-  .ev-actions { display: flex; gap: 2px; align-items: center; }
+  .ev-actions { display: flex; gap: 2px; align-items: center; flex-shrink: 0; }
   .ev-act {
     background: none; border: none;
     font-size: 15px; cursor: pointer;
@@ -790,7 +999,7 @@ const CSS = `
     background: rgba(255,255,255,0.03);
     border: 1px solid;
     border-radius: 12px; padding: 16px;
-    margin-bottom: 20px;
+    margin-bottom: 20px; width: 100%;
     display: flex; flex-direction: column; gap: 12px;
   }
   .form-hdr {
@@ -816,9 +1025,7 @@ const CSS = `
     outline: none; resize: vertical;
   }
   .g-input::placeholder { color: #3a3630; }
-  .icon-grid {
-    display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px;
-  }
+  .icon-grid { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
   .icon-btn {
     width: 38px; height: 38px; border-radius: 8px;
     border: 1px solid rgba(255,255,255,0.07);
@@ -835,13 +1042,11 @@ const CSS = `
     padding: 12px; border-radius: 10px; border: none;
     font-size: 14px; font-weight: 600;
     font-family: 'Outfit', sans-serif; cursor: pointer;
-    letter-spacing: 0.02em;
+    letter-spacing: 0.02em; width: 100%;
   }
 
   /* FINANCE */
-  .kpi-row {
-    display: flex; gap: 8px; margin-bottom: 14px;
-  }
+  .kpi-row { display: flex; gap: 8px; margin-bottom: 14px; width: 100%; }
   .kpi-card {
     flex: 1; padding: 12px 10px;
     background: rgba(255,255,255,0.03);
@@ -851,15 +1056,12 @@ const CSS = `
   }
   .kpi-arrow { font-size: 12px; margin-bottom: 4px; }
   .kpi-label { font-size: 11px; color: #5a5248; margin-bottom: 4px; }
-  .kpi-val {
-    font-family: 'DM Mono', monospace;
-    font-size: 13px; font-weight: 500;
-  }
+  .kpi-val { font-family: 'DM Mono', monospace; font-size: 13px; font-weight: 500; }
   .month-card {
     background: rgba(255,255,255,0.025);
     border: 1px solid rgba(255,255,255,0.05);
     border-radius: 10px; padding: 14px;
-    margin-bottom: 18px;
+    margin-bottom: 18px; width: 100%;
   }
   .month-top {
     display: flex; justify-content: space-between;
@@ -870,25 +1072,16 @@ const CSS = `
     font-size: 11px; color: #5a5248;
     letter-spacing: 0.08em; text-transform: uppercase;
   }
-  .month-net {
-    font-family: 'DM Mono', monospace;
-    font-size: 14px; font-weight: 500;
-  }
-  .bar-row {
-    display: flex; align-items: center; gap: 10px;
-    margin-bottom: 8px;
-  }
-  .bar-label {
-    font-family: 'DM Mono', monospace;
-    font-size: 11px; width: 90px; flex-shrink: 0;
-  }
+  .month-net { font-family: 'DM Mono', monospace; font-size: 14px; font-weight: 500; }
+  .bar-row { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; width: 100%; }
+  .bar-label { font-family: 'DM Mono', monospace; font-size: 11px; width: 90px; flex-shrink: 0; }
   .bar-track {
     flex: 1; height: 4px;
     background: rgba(255,255,255,0.06);
     border-radius: 2px; overflow: hidden;
   }
   .bar-fill { height: 100%; border-radius: 2px; transition: width 0.4s ease; }
-  .tx-btns { display: flex; gap: 8px; margin-bottom: 18px; }
+  .tx-btns { display: flex; gap: 8px; margin-bottom: 18px; width: 100%; }
   .tx-btn {
     flex: 1; padding: 12px; border-radius: 10px;
     font-size: 14px; font-weight: 600;
@@ -905,21 +1098,17 @@ const CSS = `
     font-family: 'Outfit', sans-serif; cursor: pointer;
     transition: all 0.15s;
   }
-  .tx-list { display: flex; flex-direction: column; gap: 4px; }
+  .tx-list { display: flex; flex-direction: column; gap: 4px; width: 100%; }
   .tx-row {
     display: flex; justify-content: space-between;
     align-items: center; padding: 10px 12px;
-    border-radius: 8px;
-    background: rgba(255,255,255,0.02);
+    border-radius: 8px; background: rgba(255,255,255,0.02); width: 100%;
   }
   .tx-l { display: flex; flex-direction: column; gap: 2px; }
   .tx-cat { font-size: 13px; font-weight: 500; color: #c8c0b0; }
   .tx-desc { font-size: 11px; color: #5a5248; }
   .tx-r { display: flex; align-items: center; gap: 8px; }
-  .tx-amt {
-    font-family: 'DM Mono', monospace;
-    font-size: 13px; font-weight: 500;
-  }
+  .tx-amt { font-family: 'DM Mono', monospace; font-size: 13px; font-weight: 500; }
   .tx-del {
     background: none; border: none;
     color: #3a3630; font-size: 16px; cursor: pointer;
@@ -928,12 +1117,8 @@ const CSS = `
   .tx-del:hover { color: #f87171; }
 
   /* EMPTY STATE */
-  .empty { text-align: center; padding: 48px 20px; opacity: 0.5; }
-  .empty-glyph {
-    font-size: 32px; display: block;
-    margin-bottom: 12px; color: #3a3630;
-    font-family: 'DM Mono', monospace;
-  }
+  .empty { text-align: center; padding: 48px 20px; opacity: 0.5; width: 100%; }
+  .empty-glyph { font-size: 32px; display: block; margin-bottom: 12px; color: #3a3630; font-family: 'DM Mono', monospace; }
   .empty-txt { font-size: 15px; font-weight: 500; color: #7a7068; margin-bottom: 4px; }
   .empty-sub { font-size: 12px; color: #3a3630; }
 `;
