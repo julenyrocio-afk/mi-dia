@@ -2,1092 +2,937 @@ import { useState, useEffect, useCallback, useRef } from "react";
 
 const STORAGE_KEY = "planner-data-v3";
 
-// ---------- DATE HELPERS (using local time to avoid timezone bugs) ----------
+// ── DATE HELPERS ──────────────────────────────────────────────────────────────
 const getTodayStr = () => {
   const d = new Date();
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
 };
-
-const dateStrToDate = (str) => {
-  const [y, m, d] = str.split("-").map(Number);
-  return new Date(y, m - 1, d);
+const dateStrToDate = (s) => { const [y,m,d]=s.split("-").map(Number); return new Date(y,m-1,d); };
+const dateToStr = (d) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+const addDays = (s,n) => { const d=dateStrToDate(s); d.setDate(d.getDate()+n); return dateToStr(d); };
+const formatDate = (s) => {
+  const d=dateStrToDate(s);
+  const days=["Domingo","Lunes","Martes","Miércoles","Jueves","Viernes","Sábado"];
+  const months=["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
+  return { day: days[d.getDay()], date: d.getDate(), month: months[d.getMonth()], year: d.getFullYear() };
 };
-
-const dateToStr = (d) => {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-};
-
-const addDays = (dateStr, days) => {
-  const d = dateStrToDate(dateStr);
-  d.setDate(d.getDate() + days);
-  return dateToStr(d);
-};
-
-const formatDate = (dateStr) => {
-  const d = dateStrToDate(dateStr);
-  const days = ["Domingo", "Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"];
-  const months = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
-  return `${days[d.getDay()]}, ${d.getDate()} ${months[d.getMonth()]} ${d.getFullYear()}`;
-};
-
-const daysUntil = (dateStr) => {
-  const today = dateStrToDate(getTodayStr());
-  const target = dateStrToDate(dateStr);
-  return Math.round((target - today) / (1000 * 60 * 60 * 24));
-};
-
+const daysUntil = (s) => Math.round((dateStrToDate(s)-dateStrToDate(getTodayStr()))/(864e5));
 const formatMoney = (n) => {
   const abs = Math.abs(n).toFixed(2);
-  const parts = abs.split(".");
-  parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ".");
-  return (n < 0 ? "-" : "") + parts.join(",") + " €";
+  const [int,dec] = abs.split(".");
+  return (n<0?"-":"")+int.replace(/\B(?=(\d{3})+(?!\d))/g,".")+","+(dec||"00")+" €";
 };
-
-const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+const uid = () => Date.now().toString(36)+Math.random().toString(36).slice(2,7);
 
 const CATEGORIES = {
-  expense: ["🛒 Compras", "🍽️ Comida", "🚗 Transporte", "🏠 Hogar", "🎮 Ocio", "💊 Salud", "📦 Otros"],
-  income: ["💼 Salario", "🎁 Regalo", "💰 Freelance", "📈 Inversión", "📦 Otros"],
+  expense:["🛒 Compras","🍽️ Comida","🚗 Transporte","🏠 Hogar","🎮 Ocio","💊 Salud","📦 Otros"],
+  income:["💼 Salario","🎁 Regalo","💰 Freelance","📈 Inversión","📦 Otros"],
 };
+const EVENT_ICONS = ["📅","🏥","💼","🎂","✈️","🎓","🦷","💇","🎭","🏋️","🍽️","⭐"];
 
-const EVENT_ICONS = ["📅", "🏥", "💼", "🎂", "✈️", "🎓", "🦷", "💇", "🎭", "🏋️", "🍽️", "⭐"];
-
-// ---------- GOOGLE CALENDAR LINK ----------
-const googleCalendarLink = (event) => {
-  const d = dateStrToDate(event.date);
-  let startStr, endStr;
-  if (event.time) {
-    const [h, m] = event.time.split(":").map(Number);
-    const start = new Date(d);
-    start.setHours(h, m, 0);
-    const end = new Date(start);
-    end.setHours(h + 1, m, 0);
-    const fmt = (dt) => dt.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "");
-    startStr = fmt(start);
-    endStr = fmt(end);
+const googleCalendarLink = (ev) => {
+  const d=dateStrToDate(ev.date); let s,e;
+  if(ev.time){
+    const [h,m]=ev.time.split(":").map(Number);
+    const st=new Date(d); st.setHours(h,m,0);
+    const en=new Date(st); en.setHours(h+1,m,0);
+    const f=(dt)=>dt.toISOString().replace(/[-:]/g,"").replace(/\.\d{3}/,"");
+    s=f(st); e=f(en);
   } else {
-    const fmt = (dt) => dateToStr(dt).replace(/-/g, "");
-    const end = new Date(d);
-    end.setDate(end.getDate() + 1);
-    startStr = fmt(d);
-    endStr = fmt(end);
+    const f=(dt)=>dateToStr(dt).replace(/-/g,"");
+    const en=new Date(d); en.setDate(en.getDate()+1);
+    s=f(d); e=f(en);
   }
-  const params = new URLSearchParams({
-    action: "TEMPLATE",
-    text: event.title,
-    dates: `${startStr}/${endStr}`,
-    details: event.notes || "",
-  });
-  return `https://calendar.google.com/calendar/render?${params.toString()}`;
+  return `https://calendar.google.com/calendar/render?${new URLSearchParams({action:"TEMPLATE",text:ev.title,dates:`${s}/${e}`,details:ev.notes||""}).toString()}`;
 };
 
-// ---------- NOTIFICATIONS ----------
-const checkAndNotify = (events) => {
-  if (!("Notification" in window) || Notification.permission !== "granted") return;
-  const tomorrow = addDays(getTodayStr(), 1);
-  const lastNotified = localStorage.getItem("last-notify-date");
-  if (lastNotified === getTodayStr()) return;
+// ── APP ROOT ──────────────────────────────────────────────────────────────────
+export default function App() {
+  const [data,setData]=useState(null);
+  const [loading,setLoading]=useState(true);
+  const [activeTab,setActiveTab]=useState("tasks");
+  const [selectedDate,setSelectedDate]=useState(getTodayStr());
+  const [showTxForm,setShowTxForm]=useState(false);
+  const [txType,setTxType]=useState("expense");
+  const [newTask,setNewTask]=useState("");
+  const [showEventForm,setShowEventForm]=useState(false);
+  const [editingEvent,setEditingEvent]=useState(null);
+  const taskInputRef=useRef(null);
 
-  const tomorrowEvents = events.filter(e => e.date === tomorrow);
-  if (tomorrowEvents.length > 0) {
-    const title = tomorrowEvents.length === 1
-      ? `Mañana: ${tomorrowEvents[0].title}`
-      : `Mañana tienes ${tomorrowEvents.length} eventos`;
-    const body = tomorrowEvents.map(e => `${e.icon} ${e.title}${e.time ? " · " + e.time : ""}`).join("\n");
-    try { new Notification(title, { body }); } catch {}
-    localStorage.setItem("last-notify-date", getTodayStr());
-  }
-};
-
-function App() {
-  const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState("tasks");
-  const [selectedDate, setSelectedDate] = useState(getTodayStr());
-  const [showTxForm, setShowTxForm] = useState(false);
-  const [txType, setTxType] = useState("expense");
-  const [newTask, setNewTask] = useState("");
-  const [showEventForm, setShowEventForm] = useState(false);
-  const [editingEvent, setEditingEvent] = useState(null);
-  const taskInputRef = useRef(null);
-
-  useEffect(() => {
-    (async () => {
-      try {
-        const result = await window.storage.get(STORAGE_KEY);
-        if (result) {
-          const parsed = JSON.parse(result.value);
-          if (!parsed.events) parsed.events = [];
-          setData(parsed);
-        } else {
-          setData({ tasks: {}, transactions: {}, events: [] });
-        }
-      } catch {
-        setData({ tasks: {}, transactions: {}, events: [] });
-      }
+  useEffect(()=>{
+    (async()=>{
+      try{
+        const r=await window.storage.get(STORAGE_KEY);
+        if(r){const p=JSON.parse(r.value);if(!p.events)p.events=[];setData(p);}
+        else setData({tasks:{},transactions:{},events:[]});
+      }catch{setData({tasks:{},transactions:{},events:[]});}
       setLoading(false);
     })();
-  }, []);
+  },[]);
 
-  const save = useCallback(async (newData) => {
-    setData(newData);
-    try {
-      await window.storage.set(STORAGE_KEY, JSON.stringify(newData));
-    } catch (e) {
-      console.error("Save failed:", e);
+  const save=useCallback(async(nd)=>{
+    setData(nd);
+    try{await window.storage.set(STORAGE_KEY,JSON.stringify(nd));}catch(e){console.error(e);}
+  },[]);
+
+  // carry-over pending tasks
+  useEffect(()=>{
+    if(!data)return;
+    const today=selectedDate;
+    const allDates=Object.keys(data.tasks).filter(d=>d<today).sort();
+    let carried=[];
+    for(const d of allDates){
+      const pending=(data.tasks[d]||[]).filter(t=>!t.done);
+      carried=[...carried,...pending.map(t=>({...t,carriedFrom:t.carriedFrom||d}))];
     }
-  }, []);
+    if(!carried.length)return;
+    const existing=data.tasks[today]||[];
+    const existingIds=new Set(existing.map(t=>t.id));
+    const toAdd=carried.filter(t=>!existingIds.has(t.id));
+    if(!toAdd.length)return;
+    const newTasks={...data.tasks};
+    for(const d of allDates)newTasks[d]=(newTasks[d]||[]).filter(t=>t.done);
+    newTasks[today]=[...toAdd,...existing];
+    save({...data,tasks:newTasks});
+  },[data,selectedDate,save]);
 
-  useEffect(() => {
-    if (!data) return;
-    const today = selectedDate;
-    const allDates = Object.keys(data.tasks).filter(d => d < today).sort();
-    let carried = [];
-    for (const d of allDates) {
-      const pending = (data.tasks[d] || []).filter(t => !t.done);
-      carried = [...carried, ...pending.map(t => ({ ...t, carriedFrom: t.carriedFrom || d }))];
-    }
-    if (carried.length === 0) return;
-    const existing = data.tasks[today] || [];
-    const existingIds = new Set(existing.map(t => t.id));
-    const toAdd = carried.filter(t => !existingIds.has(t.id));
-    if (toAdd.length === 0) return;
-
-    const newTasks = { ...data.tasks };
-    for (const d of allDates) {
-      newTasks[d] = (newTasks[d] || []).filter(t => t.done);
-    }
-    newTasks[today] = [...toAdd, ...existing];
-    save({ ...data, tasks: newTasks });
-  }, [data, selectedDate, save]);
-
-  useEffect(() => {
-    if (data?.events) checkAndNotify(data.events);
-  }, [data]);
-
-  if (loading) return (
-    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh", background: "#0a0a0f", color: "#e0ddd5" }}>
-      <p style={{ fontFamily: "'DM Mono', monospace", letterSpacing: "0.15em" }}>Cargando...</p>
+  if(loading)return(
+    <div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100svh",background:"#09080a"}}>
+      <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:14}}>
+        <div style={{width:28,height:28,borderRadius:"50%",border:"2px solid rgba(240,168,50,0.2)",borderTopColor:"#f0a832",animation:"spin 1s linear infinite"}}/>
+        <span style={{fontFamily:"'DM Mono',monospace",fontSize:10,letterSpacing:"0.2em",color:"#3a3630"}}>CARGANDO</span>
+      </div>
     </div>
   );
 
-  const todayTasks = (data.tasks[selectedDate] || []);
-  const todayTx = (data.transactions[selectedDate] || []);
+  const todayTasks=(data.tasks[selectedDate]||[]);
+  const todayTx=(data.transactions[selectedDate]||[]);
 
-  const addTask = () => {
-    if (!newTask.trim()) return;
-    const task = { id: uid(), text: newTask.trim(), done: false, createdAt: selectedDate };
-    const newTasks = { ...data.tasks };
-    newTasks[selectedDate] = [...(newTasks[selectedDate] || []), task];
-    save({ ...data, tasks: newTasks });
-    setNewTask("");
-    taskInputRef.current?.focus();
+  const addTask=()=>{
+    if(!newTask.trim())return;
+    const task={id:uid(),text:newTask.trim(),done:false,createdAt:selectedDate};
+    const nt={...data.tasks};
+    nt[selectedDate]=[...(nt[selectedDate]||[]),task];
+    save({...data,tasks:nt});
+    setNewTask(""); taskInputRef.current?.focus();
   };
-
-  const toggleTask = (id) => {
-    const newTasks = { ...data.tasks };
-    newTasks[selectedDate] = (newTasks[selectedDate] || []).map(t =>
-      t.id === id ? { ...t, done: !t.done } : t
-    );
-    save({ ...data, tasks: newTasks });
+  const toggleTask=(id)=>{
+    const nt={...data.tasks};
+    nt[selectedDate]=(nt[selectedDate]||[]).map(t=>t.id===id?{...t,done:!t.done}:t);
+    save({...data,tasks:nt});
   };
-
-  const deleteTask = (id) => {
-    const newTasks = { ...data.tasks };
-    newTasks[selectedDate] = (newTasks[selectedDate] || []).filter(t => t.id !== id);
-    save({ ...data, tasks: newTasks });
+  const deleteTask=(id)=>{
+    const nt={...data.tasks};
+    nt[selectedDate]=(nt[selectedDate]||[]).filter(t=>t.id!==id);
+    save({...data,tasks:nt});
   };
-
-  const addTransaction = (tx) => {
-    const newTx = { ...data.transactions };
-    newTx[selectedDate] = [...(newTx[selectedDate] || []), { ...tx, id: uid() }];
-    save({ ...data, transactions: newTx });
-    setShowTxForm(false);
+  const addTransaction=(tx)=>{
+    const ntx={...data.transactions};
+    ntx[selectedDate]=[...(ntx[selectedDate]||[]),{...tx,id:uid()}];
+    save({...data,transactions:ntx}); setShowTxForm(false);
   };
-
-  const deleteTransaction = (id) => {
-    const newTx = { ...data.transactions };
-    newTx[selectedDate] = (newTx[selectedDate] || []).filter(t => t.id !== id);
-    save({ ...data, transactions: newTx });
+  const deleteTransaction=(id)=>{
+    const ntx={...data.transactions};
+    ntx[selectedDate]=(ntx[selectedDate]||[]).filter(t=>t.id!==id);
+    save({...data,transactions:ntx});
   };
-
-  const saveEvent = (event) => {
-    let newEvents;
-    if (editingEvent) {
-      newEvents = data.events.map(e => e.id === editingEvent.id ? { ...event, id: editingEvent.id } : e);
-    } else {
-      newEvents = [...data.events, { ...event, id: uid() }];
-    }
-    save({ ...data, events: newEvents });
-    setShowEventForm(false);
-    setEditingEvent(null);
+  const saveEvent=(event)=>{
+    const ne=editingEvent
+      ?data.events.map(e=>e.id===editingEvent.id?{...event,id:editingEvent.id}:e)
+      :[...data.events,{...event,id:uid()}];
+    save({...data,events:ne}); setShowEventForm(false); setEditingEvent(null);
   };
+  const deleteEvent=(id)=>save({...data,events:data.events.filter(e=>e.id!==id)});
+  const navigateDate=(dir)=>setSelectedDate(addDays(selectedDate,dir));
+  const isToday=selectedDate===getTodayStr();
 
-  const deleteEvent = (id) => {
-    save({ ...data, events: data.events.filter(e => e.id !== id) });
-  };
-
-  const navigateDate = (dir) => {
-    setSelectedDate(addDays(selectedDate, dir));
-  };
-
-  const isToday = selectedDate === getTodayStr();
-  const totalIncome = todayTx.filter(t => t.type === "income").reduce((s, t) => s + t.amount, 0);
-  const totalExpense = todayTx.filter(t => t.type === "expense").reduce((s, t) => s + t.amount, 0);
-  const balance = totalIncome - totalExpense;
-
-  const monthKey = selectedDate.slice(0, 7);
-  const monthTx = Object.entries(data.transactions)
-    .filter(([d]) => d.startsWith(monthKey))
-    .flatMap(([, txs]) => txs);
-  const monthIncome = monthTx.filter(t => t.type === "income").reduce((s, t) => s + t.amount, 0);
-  const monthExpense = monthTx.filter(t => t.type === "expense").reduce((s, t) => s + t.amount, 0);
-
-  const completedCount = todayTasks.filter(t => t.done).length;
-  const totalTasks = todayTasks.length;
-  const upcomingEvents = data.events.filter(e => e.date >= getTodayStr()).length;
+  const totalIncome=todayTx.filter(t=>t.type==="income").reduce((s,t)=>s+t.amount,0);
+  const totalExpense=todayTx.filter(t=>t.type==="expense").reduce((s,t)=>s+t.amount,0);
+  const balance=totalIncome-totalExpense;
+  const monthKey=selectedDate.slice(0,7);
+  const monthTx=Object.entries(data.transactions).filter(([d])=>d.startsWith(monthKey)).flatMap(([,txs])=>txs);
+  const monthIncome=monthTx.filter(t=>t.type==="income").reduce((s,t)=>s+t.amount,0);
+  const monthExpense=monthTx.filter(t=>t.type==="expense").reduce((s,t)=>s+t.amount,0);
+  const completedCount=todayTasks.filter(t=>t.done).length;
+  const upcomingEvents=data.events.filter(e=>e.date>=getTodayStr()).length;
+  const fmt=formatDate(selectedDate);
 
   return (
-    <div style={styles.root}>
-      <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+    <div className="app-root">
+      <style>{CSS}</style>
 
-      <header style={styles.header}>
-        <div style={styles.headerInner}>
-          <div style={styles.logo}>
-            <span style={styles.logoIcon}>▣</span>
-            <span style={styles.logoText}>mi día</span>
+      {/* HEADER */}
+      <header className="app-header">
+        <div className="header-row1">
+          <div className="logo">
+            <span className="logo-dot"/>
+            <span className="logo-text">mi día</span>
           </div>
-          {activeTab !== "agenda" && (
-            <>
-              <div style={styles.dateNav}>
-                <button onClick={() => navigateDate(-1)} style={styles.navBtn}>◂</button>
-                <div style={styles.dateBlock}>
-                  <span style={styles.dateLabel}>{formatDate(selectedDate)}</span>
-                  {isToday && <span style={styles.todayBadge}>HOY</span>}
-                </div>
-                <button onClick={() => navigateDate(1)} style={styles.navBtn}>▸</button>
-              </div>
-              {!isToday && (
-                <button onClick={() => setSelectedDate(getTodayStr())} style={styles.goToday}>Ir a hoy</button>
-              )}
-            </>
-          )}
+          <span className="header-meta">{fmt.year}</span>
         </div>
-      </header>
 
-      <div style={styles.tabs}>
-        <button
-          onClick={() => setActiveTab("tasks")}
-          style={{ ...styles.tab, ...(activeTab === "tasks" ? styles.tabActive : {}) }}
-        >
-          <span style={styles.tabIcon}>☐</span> Tareas
-          {totalTasks > 0 && (
-            <span style={styles.tabCount}>{completedCount}/{totalTasks}</span>
-          )}
-        </button>
-        <button
-          onClick={() => setActiveTab("agenda")}
-          style={{ ...styles.tab, ...(activeTab === "agenda" ? styles.tabActive : {}) }}
-        >
-          <span style={styles.tabIcon}>📅</span> Agenda
-          {upcomingEvents > 0 && (
-            <span style={styles.tabCount}>{upcomingEvents}</span>
-          )}
-        </button>
-        <button
-          onClick={() => setActiveTab("finance")}
-          style={{ ...styles.tab, ...(activeTab === "finance" ? styles.tabActive : {}) }}
-        >
-          <span style={styles.tabIcon}>€</span> Finanzas
-        </button>
-      </div>
-
-      <main style={styles.main}>
-        {activeTab === "tasks" && (
-          <TasksView
-            tasks={todayTasks}
-            newTask={newTask}
-            setNewTask={setNewTask}
-            addTask={addTask}
-            toggleTask={toggleTask}
-            deleteTask={deleteTask}
-            taskInputRef={taskInputRef}
-          />
+        {activeTab !== "agenda" && (
+          <div className="date-hero">
+            <button className="date-nav-btn" onClick={()=>navigateDate(-1)}>‹</button>
+            <div className="date-center">
+              <div className="date-big">{fmt.day}, {fmt.date} {fmt.month.slice(0,3)}</div>
+              <div className="date-sub">
+                {isToday
+                  ? <span className="today-pip">Hoy</span>
+                  : <span>{fmt.month} {fmt.year}</span>
+                }
+                {!isToday && (
+                  <button className="today-chip" onClick={()=>setSelectedDate(getTodayStr())}>↩ hoy</button>
+                )}
+              </div>
+            </div>
+            <button className="date-nav-btn" onClick={()=>navigateDate(1)}>›</button>
+          </div>
         )}
         {activeTab === "agenda" && (
-          <AgendaView
-            events={data.events}
-            onAdd={() => { setEditingEvent(null); setShowEventForm(true); }}
-            onEdit={(ev) => { setEditingEvent(ev); setShowEventForm(true); }}
-            onDelete={deleteEvent}
-            showForm={showEventForm}
-            editingEvent={editingEvent}
-            onSave={saveEvent}
-            onCancel={() => { setShowEventForm(false); setEditingEvent(null); }}
-          />
+          <div style={{paddingBottom:4}}>
+            <div className="date-big" style={{fontSize:22}}>Agenda</div>
+            <div className="date-sub">{upcomingEvents > 0 ? `${upcomingEvents} próximos` : "Sin eventos próximos"}</div>
+          </div>
         )}
-        {activeTab === "finance" && (
-          <FinanceView
-            transactions={todayTx}
-            totalIncome={totalIncome}
-            totalExpense={totalExpense}
-            balance={balance}
-            monthIncome={monthIncome}
-            monthExpense={monthExpense}
-            monthKey={monthKey}
-            showTxForm={showTxForm}
-            setShowTxForm={setShowTxForm}
-            txType={txType}
-            setTxType={setTxType}
-            addTransaction={addTransaction}
-            deleteTransaction={deleteTransaction}
-          />
+        <div className="header-divider"/>
+      </header>
+
+      {/* CONTENT */}
+      <main className="app-scroll" key={activeTab}>
+        {activeTab==="tasks" && (
+          <TasksView tasks={todayTasks} newTask={newTask} setNewTask={setNewTask}
+            addTask={addTask} toggleTask={toggleTask} deleteTask={deleteTask} taskInputRef={taskInputRef}/>
+        )}
+        {activeTab==="agenda" && (
+          <AgendaView events={data.events}
+            onAdd={()=>{setEditingEvent(null);setShowEventForm(true);}}
+            onEdit={(ev)=>{setEditingEvent(ev);setShowEventForm(true);}}
+            onDelete={deleteEvent}
+            showForm={showEventForm} editingEvent={editingEvent}
+            onSave={saveEvent} onCancel={()=>{setShowEventForm(false);setEditingEvent(null);}}/>
+        )}
+        {activeTab==="finance" && (
+          <FinanceView transactions={todayTx} totalIncome={totalIncome} totalExpense={totalExpense}
+            balance={balance} monthIncome={monthIncome} monthExpense={monthExpense} monthKey={monthKey}
+            showTxForm={showTxForm} setShowTxForm={setShowTxForm} txType={txType} setTxType={setTxType}
+            addTransaction={addTransaction} deleteTransaction={deleteTransaction}/>
         )}
       </main>
+
+      {/* BOTTOM NAV */}
+      <nav className="bottom-nav">
+        <NavBtn id="tasks" label="Tareas" icon="✦" active={activeTab==="tasks"} onClick={setActiveTab}
+          badge={todayTasks.length>0?`${completedCount}/${todayTasks.length}`:null}/>
+        <NavBtn id="agenda" label="Agenda" icon="◈" active={activeTab==="agenda"} onClick={setActiveTab}
+          badge={upcomingEvents>0?upcomingEvents:null}/>
+        <NavBtn id="finance" label="Finanzas" icon="◎" active={activeTab==="finance"} onClick={setActiveTab}/>
+      </nav>
     </div>
   );
 }
 
-function TasksView({ tasks, newTask, setNewTask, addTask, toggleTask, deleteTask, taskInputRef }) {
-  const pending = tasks.filter(t => !t.done);
-  const done = tasks.filter(t => t.done);
+function NavBtn({id,label,icon,active,onClick,badge}){
+  return(
+    <button className={`nav-btn${active?" active":""}`} onClick={()=>onClick(id)}>
+      {badge && <span className="nav-badge">{badge}</span>}
+      <div className="nav-icon-wrap">{icon}</div>
+      <span className="nav-label">{label}</span>
+    </button>
+  );
+}
 
-  return (
+// ── TASKS VIEW ────────────────────────────────────────────────────────────────
+function TasksView({tasks,newTask,setNewTask,addTask,toggleTask,deleteTask,taskInputRef}){
+  const pending=tasks.filter(t=>!t.done);
+  const done=tasks.filter(t=>t.done);
+  const pct=tasks.length?(done.length/tasks.length)*100:0;
+  const allDone=tasks.length>0&&done.length===tasks.length;
+  return(
     <div>
-      <div style={styles.addTaskRow}>
-        <input
-          ref={taskInputRef}
-          type="text"
-          placeholder="Añadir tarea..."
-          value={newTask}
-          onChange={e => setNewTask(e.target.value)}
-          onKeyDown={e => e.key === "Enter" && addTask()}
-          style={styles.addTaskInput}
-        />
-        <button onClick={addTask} style={styles.addBtn}>+</button>
+      <div className="task-input-wrap">
+        <input ref={taskInputRef} className="task-input" type="text"
+          placeholder="Nueva tarea…" value={newTask}
+          onChange={e=>setNewTask(e.target.value)}
+          onKeyDown={e=>e.key==="Enter"&&addTask()}/>
+        <button className={`task-add-btn${newTask.trim()?" active":""}`} onClick={addTask}>+</button>
       </div>
-
-      {tasks.length > 0 && (
-        <div style={styles.progressArea}>
-          <div style={styles.progressBar}>
-            <div style={{
-              ...styles.progressFill,
-              width: `${tasks.length ? (done.length / tasks.length) * 100 : 0}%`,
-            }} />
+      {tasks.length>0&&(
+        <div className="progress-row">
+          <div className="prog-track">
+            <div className="prog-fill" style={{width:`${pct}%`}}/>
           </div>
-          <span style={styles.progressText}>
-            {done.length === tasks.length && tasks.length > 0
-              ? "✓ ¡Todo completado!"
-              : `${done.length} de ${tasks.length} completadas`}
+          <span className="prog-label">
+            {allDone ? "✦ completado" : `${done.length}/${tasks.length}`}
           </span>
         </div>
       )}
-
-      {pending.length > 0 && (
-        <div style={styles.taskSection}>
-          <h3 style={styles.taskSectionTitle}>Pendientes</h3>
-          {pending.map(t => (
-            <TaskItem key={t.id} task={t} onToggle={toggleTask} onDelete={deleteTask} />
-          ))}
-        </div>
+      {pending.length>0&&(
+        <section className="task-section">
+          <h3 className="sec-label">Pendientes</h3>
+          {pending.map(t=><TaskCard key={t.id} task={t} onToggle={toggleTask} onDelete={deleteTask}/>)}
+        </section>
       )}
-
-      {done.length > 0 && (
-        <div style={styles.taskSection}>
-          <h3 style={{ ...styles.taskSectionTitle, opacity: 0.5 }}>Completadas</h3>
-          {done.map(t => (
-            <TaskItem key={t.id} task={t} onToggle={toggleTask} onDelete={deleteTask} />
-          ))}
-        </div>
+      {done.length>0&&(
+        <section className="task-section" style={{opacity:0.55}}>
+          <h3 className="sec-label">Completadas</h3>
+          {done.map(t=><TaskCard key={t.id} task={t} onToggle={toggleTask} onDelete={deleteTask}/>)}
+        </section>
       )}
-
-      {tasks.length === 0 && (
-        <div style={styles.emptyState}>
-          <span style={styles.emptyIcon}>📋</span>
-          <p style={styles.emptyText}>Sin tareas para este día</p>
-          <p style={styles.emptySubtext}>Añade tu primera tarea arriba</p>
-        </div>
-      )}
+      {tasks.length===0&&<Empty glyph="—" txt="Sin tareas para hoy" sub="Escribe arriba y pulsa Enter"/>}
     </div>
   );
 }
 
-function TaskItem({ task, onToggle, onDelete }) {
-  return (
-    <div style={styles.taskItem}>
-      <button onClick={() => onToggle(task.id)} style={styles.checkbox}>
-        {task.done ? <span style={styles.checked}>✓</span> : <span style={styles.unchecked} />}
+function TaskCard({task,onToggle,onDelete}){
+  return(
+    <div className="task-card">
+      <button className="check-btn" onClick={()=>onToggle(task.id)}>
+        <div className={`check-ring${task.done?" done":""}`}/>
       </button>
-      <div style={styles.taskContent}>
-        <span style={{
-          ...styles.taskText,
-          ...(task.done ? { textDecoration: "line-through", opacity: 0.4 } : {}),
-        }}>
-          {task.text}
-        </span>
-        {task.carriedFrom && (
-          <span style={styles.carriedBadge}>⟲ desde {task.carriedFrom.slice(5)}</span>
-        )}
+      <div className="task-body">
+        <span className={`task-txt${task.done?" done":""}`}>{task.text}</span>
+        {task.carriedFrom&&<span className="carry-tag">⟲ {task.carriedFrom.slice(5)}</span>}
       </div>
-      <button onClick={() => onDelete(task.id)} style={styles.deleteBtn}>×</button>
+      <button className="task-del" onClick={()=>onDelete(task.id)}>×</button>
     </div>
   );
 }
 
-function AgendaView({ events, onAdd, onEdit, onDelete, showForm, editingEvent, onSave, onCancel }) {
-  const [notifPermission, setNotifPermission] = useState(
-    typeof Notification !== "undefined" ? Notification.permission : "unsupported"
+// ── AGENDA VIEW ───────────────────────────────────────────────────────────────
+function AgendaView({events,onAdd,onEdit,onDelete,showForm,editingEvent,onSave,onCancel}){
+  const today=getTodayStr();
+  const upcoming=events.filter(e=>e.date>=today).sort((a,b)=>a.date.localeCompare(b.date)||(a.time||"").localeCompare(b.time||""));
+  const past=events.filter(e=>e.date<today).sort((a,b)=>b.date.localeCompare(a.date));
+  const grouped={};
+  for(const ev of upcoming){if(!grouped[ev.date])grouped[ev.date]=[];grouped[ev.date].push(ev);}
+  return(
+    <div>
+      {showForm
+        ?<EventForm event={editingEvent} onSave={onSave} onCancel={onCancel}/>
+        :<button className="add-event-btn" onClick={onAdd}>Nuevo evento</button>
+      }
+      {upcoming.length>0&&(
+        <section className="task-section">
+          <h3 className="sec-label">Próximos</h3>
+          {Object.keys(grouped).map(date=>(
+            <div key={date} className="agenda-group">
+              <div className="agenda-date-row">
+                <span className="agenda-date-txt">{formatDate(date).day}, {formatDate(date).date} {formatDate(date).month.slice(0,3)}</span>
+                <span className="agenda-days-tag">
+                  {daysUntil(date)===0?"hoy":daysUntil(date)===1?"mañana":`${daysUntil(date)}d`}
+                </span>
+              </div>
+              {grouped[date].map(ev=><EventCard key={ev.id} event={ev} onEdit={onEdit} onDelete={onDelete}/>)}
+            </div>
+          ))}
+        </section>
+      )}
+      {past.length>0&&(
+        <section className="task-section" style={{opacity:0.5}}>
+          <h3 className="sec-label">Pasados</h3>
+          {past.slice(0,8).map(ev=><EventCard key={ev.id} event={ev} onEdit={onEdit} onDelete={onDelete}/>)}
+        </section>
+      )}
+      {events.length===0&&<Empty glyph="◈" txt="Sin eventos" sub="Añade tu primer evento"/>}
+    </div>
   );
+}
 
-  const requestNotif = async () => {
-    if (!("Notification" in window)) return;
-    const result = await Notification.requestPermission();
-    setNotifPermission(result);
+function EventCard({event,onEdit,onDelete}){
+  return(
+    <div className="event-card">
+      <span className="ev-icon">{event.icon||"📅"}</span>
+      <div className="ev-body">
+        <span className="ev-title">{event.title}</span>
+        <div className="ev-meta">
+          {event.time&&<span className="ev-chip">🕐 {event.time}</span>}
+          {event.notes&&<span className="ev-chip">{event.notes}</span>}
+        </div>
+      </div>
+      <div className="ev-actions">
+        <a href={googleCalendarLink(event)} target="_blank" rel="noreferrer" className="ev-act" title="Google Cal">📆</a>
+        <button className="ev-act" onClick={()=>onEdit(event)}>✎</button>
+        <button className="ev-act del" onClick={()=>onDelete(event.id)}>×</button>
+      </div>
+    </div>
+  );
+}
+
+function EventForm({event,onSave,onCancel}){
+  const [title,setTitle]=useState(event?.title||"");
+  const [date,setDate]=useState(event?.date||getTodayStr());
+  const [time,setTime]=useState(event?.time||"");
+  const [icon,setIcon]=useState(event?.icon||"📅");
+  const [notes,setNotes]=useState(event?.notes||"");
+  const submit=()=>{if(!title.trim()||!date)return;onSave({title:title.trim(),date,time,icon,notes:notes.trim()});};
+  return(
+    <div className="form-card" style={{borderColor:"rgba(240,168,50,0.18)"}}>
+      <div className="form-hdr">
+        <span className="form-title" style={{color:"#f0a832"}}>{event?"Editar evento":"Nuevo evento"}</span>
+        <button className="form-close" onClick={onCancel}>×</button>
+      </div>
+      <input className="g-input" type="text" placeholder="Título del evento…" value={title} onChange={e=>setTitle(e.target.value)} autoFocus/>
+      <div style={{display:"flex",gap:8}}>
+        <div style={{flex:1}}><label className="field-lbl">Fecha</label><input className="g-input" type="date" value={date} onChange={e=>setDate(e.target.value)}/></div>
+        <div style={{flex:1}}><label className="field-lbl">Hora</label><input className="g-input" type="time" value={time} onChange={e=>setTime(e.target.value)}/></div>
+      </div>
+      <div><label className="field-lbl">Icono</label>
+        <div className="icon-grid">
+          {EVENT_ICONS.map(i=>(
+            <button key={i} className={`icon-btn${icon===i?" sel":""}`} onClick={()=>setIcon(i)}>{i}</button>
+          ))}
+        </div>
+      </div>
+      <textarea className="g-input" placeholder="Notas (opcional)" value={notes} onChange={e=>setNotes(e.target.value)}/>
+      <button className="submit-btn" style={{background:"linear-gradient(135deg,#f0a832,#e08820)",color:"#09080a"}} onClick={submit}>Guardar evento</button>
+    </div>
+  );
+}
+
+// ── FINANCE VIEW ──────────────────────────────────────────────────────────────
+function FinanceView({transactions,totalIncome,totalExpense,balance,monthIncome,monthExpense,monthKey,showTxForm,setShowTxForm,txType,setTxType,addTransaction,deleteTransaction}){
+  const monthNet=monthIncome-monthExpense;
+  const mx=Math.max(monthIncome,monthExpense)||1;
+  const balColor=balance>=0?"#60b8f0":"#fbbf24";
+  return(
+    <div>
+      <div className="kpi-row">
+        <div className="kpi-card" style={{"--c":"#2dd4a0"}}>
+          <div className="kpi-arrow" style={{color:"#2dd4a0"}}>▲</div>
+          <div className="kpi-label">Ingresos</div>
+          <div className="kpi-val" style={{color:"#2dd4a0"}}>{formatMoney(totalIncome)}</div>
+          <div style={{position:"absolute",bottom:0,left:0,right:0,height:2,background:"#2dd4a0",opacity:0.5,borderRadius:"0 0 10px 10px"}}/>
+        </div>
+        <div className="kpi-card">
+          <div className="kpi-arrow" style={{color:"#f87171"}}>▼</div>
+          <div className="kpi-label">Gastos</div>
+          <div className="kpi-val" style={{color:"#f87171"}}>{formatMoney(totalExpense)}</div>
+          <div style={{position:"absolute",bottom:0,left:0,right:0,height:2,background:"#f87171",opacity:0.5,borderRadius:"0 0 10px 10px"}}/>
+        </div>
+        <div className="kpi-card">
+          <div className="kpi-arrow" style={{color:balColor}}>=</div>
+          <div className="kpi-label">Balance</div>
+          <div className="kpi-val" style={{color:balColor}}>{formatMoney(balance)}</div>
+          <div style={{position:"absolute",bottom:0,left:0,right:0,height:2,background:balColor,opacity:0.5,borderRadius:"0 0 10px 10px"}}/>
+        </div>
+      </div>
+      <div className="month-card">
+        <div className="month-top">
+          <span className="month-title">Resumen {monthKey}</span>
+          <span className="month-net" style={{color:monthNet>=0?"#60b8f0":"#fbbf24"}}>{formatMoney(monthNet)}</span>
+        </div>
+        <div className="bar-row">
+          <span className="bar-label" style={{color:"#2dd4a0"}}>▲ {formatMoney(monthIncome)}</span>
+          <div className="bar-track"><div className="bar-fill" style={{width:`${(monthIncome/mx)*100}%`,background:"#2dd4a0",opacity:0.7}}/></div>
+        </div>
+        <div className="bar-row" style={{marginBottom:0}}>
+          <span className="bar-label" style={{color:"#f87171"}}>▼ {formatMoney(monthExpense)}</span>
+          <div className="bar-track"><div className="bar-fill" style={{width:`${(monthExpense/mx)*100}%`,background:"#f87171",opacity:0.7}}/></div>
+        </div>
+      </div>
+      {!showTxForm&&(
+        <div className="tx-btns">
+          <button className="tx-btn tx-exp" onClick={()=>{setTxType("expense");setShowTxForm(true);}}>− Gasto</button>
+          <button className="tx-btn tx-inc" onClick={()=>{setTxType("income");setShowTxForm(true);}}>+ Ingreso</button>
+        </div>
+      )}
+      {showTxForm&&<TransactionForm type={txType} onAdd={addTransaction} onCancel={()=>setShowTxForm(false)}/>}
+      {transactions.length>0?(
+        <div className="tx-list">
+          {transactions.map(tx=>(
+            <div key={tx.id} className="tx-row">
+              <div className="tx-l">
+                <span className="tx-cat">{tx.category}</span>
+                {tx.description&&<span className="tx-desc">{tx.description}</span>}
+              </div>
+              <div className="tx-r">
+                <span className="tx-amt" style={{color:tx.type==="income"?"#2dd4a0":"#f87171"}}>
+                  {tx.type==="income"?"+":"−"}{formatMoney(tx.amount)}
+                </span>
+                <button className="tx-del" onClick={()=>deleteTransaction(tx.id)}>×</button>
+              </div>
+            </div>
+          ))}
+        </div>
+      ):<Empty glyph="—" txt="Sin movimientos" sub="Registra tu primer gasto o ingreso"/>}
+    </div>
+  );
+}
+
+function TransactionForm({type,onAdd,onCancel}){
+  const [amount,setAmount]=useState("");
+  const [category,setCategory]=useState(CATEGORIES[type][0]);
+  const [description,setDescription]=useState("");
+  const isExp=type==="expense";
+  const ac=isExp?"#f87171":"#2dd4a0";
+  const submit=()=>{
+    const val=parseFloat(amount.replace(",","."));
+    if(!val||val<=0)return;
+    onAdd({type,amount:val,category,description:description.trim()});
   };
+  return(
+    <div className="form-card" style={{borderColor:isExp?"rgba(248,113,113,0.2)":"rgba(45,212,160,0.2)"}}>
+      <div className="form-hdr">
+        <span className="form-title" style={{color:ac}}>{isExp?"Nuevo gasto":"Nuevo ingreso"}</span>
+        <button className="form-close" onClick={onCancel}>×</button>
+      </div>
+      <input className="g-input" type="text" inputMode="decimal" placeholder="Cantidad en €"
+        value={amount} onChange={e=>setAmount(e.target.value)} autoFocus/>
+      <div className="cat-grid">
+        {CATEGORIES[type].map(c=>(
+          <button key={c} className="cat-btn"
+            style={category===c?{borderColor:ac,color:ac,background:`${ac}18`}:{}}
+            onClick={()=>setCategory(c)}>{c}</button>
+        ))}
+      </div>
+      <input className="g-input" type="text" placeholder="Descripción (opcional)"
+        value={description} onChange={e=>setDescription(e.target.value)} onKeyDown={e=>e.key==="Enter"&&submit()}/>
+      <button className="submit-btn" onClick={submit}
+        style={isExp
+          ?{background:"linear-gradient(135deg,#f87171,#ef4444)",color:"#fff"}
+          :{background:"linear-gradient(135deg,#2dd4a0,#10b981)",color:"#022c22"}}>
+        Guardar
+      </button>
+    </div>
+  );
+}
 
-  const today = getTodayStr();
-  const upcoming = events
-    .filter(e => e.date >= today)
-    .sort((a, b) => a.date.localeCompare(b.date) || (a.time || "").localeCompare(b.time || ""));
-  const past = events
-    .filter(e => e.date < today)
-    .sort((a, b) => b.date.localeCompare(a.date));
+function Empty({glyph,txt,sub}){
+  return(
+    <div className="empty">
+      <span className="empty-glyph">{glyph}</span>
+      <p className="empty-txt">{txt}</p>
+      <p className="empty-sub">{sub}</p>
+    </div>
+  );
+}
 
-  const grouped = {};
-  for (const ev of upcoming) {
-    if (!grouped[ev.date]) grouped[ev.date] = [];
-    grouped[ev.date].push(ev);
+// ── CSS ───────────────────────────────────────────────────────────────────────
+const CSS = `
+  @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Outfit:wght@300;400;500;600;700&display=swap');
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: #09080a;
+    color: #c8c0b0;
+    font-family: 'Outfit', sans-serif;
+    -webkit-font-smoothing: antialiased;
   }
 
-  return (
-    <div>
-      {notifPermission === "default" && (
-        <div style={styles.notifBanner}>
-          <span style={{ fontSize: 13 }}>🔔 Activa notificaciones para que te avise 1 día antes</span>
-          <button onClick={requestNotif} style={styles.notifBtn}>Activar</button>
-        </div>
-      )}
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes fadein { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:none; } }
 
-      {showForm ? (
-        <EventForm event={editingEvent} onSave={onSave} onCancel={onCancel} />
-      ) : (
-        <button onClick={onAdd} style={styles.addEventBtn}>
-          + Nuevo evento
-        </button>
-      )}
+  .app-root {
+    max-width: 480px;
+    margin: 0 auto;
+    min-height: 100svh;
+    display: flex;
+    flex-direction: column;
+    background: #09080a;
+  }
 
-      {upcoming.length > 0 && (
-        <div style={styles.taskSection}>
-          <h3 style={styles.taskSectionTitle}>Próximos</h3>
-          {Object.keys(grouped).map(date => (
-            <div key={date} style={styles.agendaGroup}>
-              <div style={styles.agendaDateHeader}>
-                <span style={styles.agendaDateText}>{formatDate(date)}</span>
-                <span style={styles.agendaDaysLeft}>
-                  {daysUntil(date) === 0 ? "hoy" : daysUntil(date) === 1 ? "mañana" : `en ${daysUntil(date)} días`}
-                </span>
-              </div>
-              {grouped[date].map(ev => (
-                <EventItem key={ev.id} event={ev} onEdit={onEdit} onDelete={onDelete} />
-              ))}
-            </div>
-          ))}
-        </div>
-      )}
+  /* HEADER */
+  .app-header {
+    padding: 20px 20px 0;
+    background: #09080a;
+    position: sticky;
+    top: 0;
+    z-index: 20;
+  }
+  .header-row1 {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 16px;
+  }
+  .logo { display: flex; align-items: center; gap: 8px; }
+  .logo-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: #f0a832;
+    box-shadow: 0 0 8px #f0a83288;
+  }
+  .logo-text {
+    font-family: 'DM Mono', monospace;
+    font-size: 16px; font-weight: 500;
+    letter-spacing: 0.06em; color: #e8dcc8;
+  }
+  .header-meta {
+    font-family: 'DM Mono', monospace;
+    font-size: 11px; color: #3a3630;
+    letter-spacing: 0.1em;
+  }
+  .date-hero {
+    display: flex; align-items: center; gap: 10px;
+    margin-bottom: 16px;
+  }
+  .date-nav-btn {
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.06);
+    color: #c8c0b0; border-radius: 8px;
+    width: 36px; height: 36px;
+    font-size: 20px; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+  }
+  .date-center { flex: 1; text-align: center; }
+  .date-big {
+    font-size: 20px; font-weight: 600;
+    color: #e8dcc8; letter-spacing: -0.01em;
+  }
+  .date-sub {
+    display: flex; align-items: center; justify-content: center;
+    gap: 8px; margin-top: 2px;
+    font-size: 12px; color: #5a5248;
+  }
+  .today-pip {
+    background: rgba(240,168,50,0.15);
+    color: #f0a832;
+    padding: 1px 8px; border-radius: 20px;
+    font-size: 11px; font-weight: 500;
+  }
+  .today-chip {
+    background: transparent; border: 1px solid rgba(255,255,255,0.08);
+    color: #7a7068; font-size: 11px;
+    padding: 2px 8px; border-radius: 6px; cursor: pointer;
+    font-family: 'Outfit', sans-serif;
+  }
+  .header-divider {
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(255,255,255,0.06) 30%, rgba(255,255,255,0.06) 70%, transparent);
+  }
 
-      {past.length > 0 && (
-        <div style={styles.taskSection}>
-          <h3 style={{ ...styles.taskSectionTitle, opacity: 0.5 }}>Pasados</h3>
-          {past.slice(0, 10).map(ev => (
-            <EventItem key={ev.id} event={ev} onEdit={onEdit} onDelete={onDelete} isPast />
-          ))}
-        </div>
-      )}
+  /* SCROLL AREA */
+  .app-scroll {
+    flex: 1;
+    padding: 20px 20px 100px;
+    overflow-y: auto;
+    animation: fadein 0.2s ease;
+  }
 
-      {events.length === 0 && (
-        <div style={styles.emptyState}>
-          <span style={styles.emptyIcon}>📅</span>
-          <p style={styles.emptyText}>Sin eventos</p>
-          <p style={styles.emptySubtext}>Añade tu primer evento arriba</p>
-        </div>
-      )}
-    </div>
-  );
-}
+  /* BOTTOM NAV */
+  .bottom-nav {
+    position: fixed; bottom: 0; left: 50%;
+    transform: translateX(-50%);
+    width: 100%; max-width: 480px;
+    display: flex;
+    background: rgba(9,8,10,0.92);
+    backdrop-filter: blur(20px);
+    border-top: 1px solid rgba(255,255,255,0.06);
+    padding: 8px 0 max(8px, env(safe-area-inset-bottom));
+    z-index: 30;
+  }
+  .nav-btn {
+    flex: 1; display: flex; flex-direction: column;
+    align-items: center; gap: 3px;
+    background: none; border: none;
+    color: #3a3630; cursor: pointer;
+    position: relative; padding: 4px 0;
+    transition: color 0.2s;
+  }
+  .nav-btn.active { color: #f0a832; }
+  .nav-icon-wrap { font-size: 18px; line-height: 1; }
+  .nav-label { font-size: 10px; letter-spacing: 0.05em; font-weight: 500; }
+  .nav-badge {
+    position: absolute; top: 0; right: 22%;
+    background: #f0a832; color: #09080a;
+    font-size: 9px; font-weight: 700;
+    padding: 1px 5px; border-radius: 10px;
+    font-family: 'DM Mono', monospace;
+  }
 
-function EventItem({ event, onEdit, onDelete, isPast }) {
-  return (
-    <div style={{ ...styles.eventItem, ...(isPast ? { opacity: 0.5 } : {}) }}>
-      <span style={styles.eventIcon}>{event.icon || "📅"}</span>
-      <div style={styles.eventContent}>
-        <span style={styles.eventTitle}>{event.title}</span>
-        <div style={styles.eventMeta}>
-          {event.time && <span style={styles.eventTime}>🕐 {event.time}</span>}
-          {event.notes && <span style={styles.eventNotes}>{event.notes}</span>}
-        </div>
-      </div>
-      <div style={styles.eventActions}>
-        <a
-          href={googleCalendarLink(event)}
-          target="_blank"
-          rel="noreferrer"
-          style={styles.gcalBtn}
-          title="Añadir a Google Calendar"
-        >
-          📆
-        </a>
-        <button onClick={() => onEdit(event)} style={styles.editBtn}>✎</button>
-        <button onClick={() => onDelete(event.id)} style={styles.deleteBtn}>×</button>
-      </div>
-    </div>
-  );
-}
+  /* TASKS */
+  .task-input-wrap {
+    display: flex; gap: 8px; margin-bottom: 16px;
+  }
+  .task-input {
+    flex: 1; padding: 12px 14px;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.07);
+    border-radius: 10px; color: #e8dcc8;
+    font-size: 14px; font-family: 'Outfit', sans-serif;
+    outline: none;
+  }
+  .task-input::placeholder { color: #3a3630; }
+  .task-add-btn {
+    width: 44px; height: 44px; border-radius: 10px;
+    background: rgba(240,168,50,0.12);
+    border: 1px solid rgba(240,168,50,0.2);
+    color: #f0a832; font-size: 22px; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    transition: all 0.2s;
+  }
+  .task-add-btn.active {
+    background: #f0a832; color: #09080a;
+    border-color: #f0a832;
+  }
+  .progress-row {
+    display: flex; align-items: center; gap: 10px;
+    margin-bottom: 20px;
+  }
+  .prog-track {
+    flex: 1; height: 3px;
+    background: rgba(255,255,255,0.06);
+    border-radius: 2px; overflow: hidden;
+  }
+  .prog-fill {
+    height: 100%;
+    background: linear-gradient(90deg, #f0a832, #fbbf24);
+    border-radius: 2px;
+    transition: width 0.4s ease;
+  }
+  .prog-label {
+    font-family: 'DM Mono', monospace;
+    font-size: 11px; color: #5a5248;
+    white-space: nowrap;
+  }
+  .task-section { margin-bottom: 24px; }
+  .sec-label {
+    font-family: 'DM Mono', monospace;
+    font-size: 10px; font-weight: 400;
+    letter-spacing: 0.15em; text-transform: uppercase;
+    color: #3a3630; margin-bottom: 10px; padding-left: 2px;
+  }
+  .task-card {
+    display: flex; align-items: center; gap: 12px;
+    padding: 11px 12px; border-radius: 10px;
+    background: rgba(255,255,255,0.025);
+    border: 1px solid rgba(255,255,255,0.04);
+    margin-bottom: 6px;
+    transition: background 0.15s;
+  }
+  .check-btn {
+    background: none; border: none; cursor: pointer;
+    padding: 2px; flex-shrink: 0;
+  }
+  .check-ring {
+    width: 20px; height: 20px; border-radius: 50%;
+    border: 2px solid rgba(255,255,255,0.15);
+    transition: all 0.2s;
+  }
+  .check-ring.done {
+    background: #f0a832;
+    border-color: #f0a832;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 12 10' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 5l3 3 7-7' stroke='%2309080a' stroke-width='2' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: center;
+    background-size: 10px;
+  }
+  .task-body { flex: 1; display: flex; flex-direction: column; gap: 2px; }
+  .task-txt { font-size: 14px; color: #c8c0b0; line-height: 1.4; }
+  .task-txt.done { text-decoration: line-through; color: #3a3630; }
+  .carry-tag {
+    font-family: 'DM Mono', monospace;
+    font-size: 10px; color: #f0a83255;
+  }
+  .task-del {
+    background: none; border: none; color: #2a2620;
+    font-size: 18px; cursor: pointer; padding: 0 4px;
+    transition: color 0.15s;
+  }
+  .task-del:hover { color: #f87171; }
 
-function EventForm({ event, onSave, onCancel }) {
-  const [title, setTitle] = useState(event?.title || "");
-  const [date, setDate] = useState(event?.date || getTodayStr());
-  const [time, setTime] = useState(event?.time || "");
-  const [icon, setIcon] = useState(event?.icon || "📅");
-  const [notes, setNotes] = useState(event?.notes || "");
+  /* AGENDA */
+  .add-event-btn {
+    width: 100%; padding: 12px;
+    background: rgba(240,168,50,0.08);
+    border: 1px solid rgba(240,168,50,0.2);
+    border-radius: 10px; color: #f0a832;
+    font-size: 14px; font-weight: 600;
+    font-family: 'Outfit', sans-serif;
+    cursor: pointer; margin-bottom: 20px;
+    letter-spacing: 0.02em;
+  }
+  .agenda-group { margin-bottom: 16px; }
+  .agenda-date-row {
+    display: flex; justify-content: space-between;
+    align-items: center;
+    padding: 4px 2px 6px;
+  }
+  .agenda-date-txt { font-size: 13px; font-weight: 600; color: #f0a832; }
+  .agenda-days-tag {
+    font-family: 'DM Mono', monospace;
+    font-size: 11px; color: #5a5248;
+    background: rgba(240,168,50,0.08);
+    padding: 2px 8px; border-radius: 10px;
+  }
+  .event-card {
+    display: flex; align-items: center; gap: 12px;
+    padding: 12px; border-radius: 10px;
+    background: rgba(255,255,255,0.025);
+    border: 1px solid rgba(255,255,255,0.04);
+    margin-bottom: 6px;
+  }
+  .ev-icon { font-size: 22px; flex-shrink: 0; }
+  .ev-body { flex: 1; min-width: 0; }
+  .ev-title { font-size: 14px; font-weight: 500; color: #e8dcc8; display: block; }
+  .ev-meta { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 3px; }
+  .ev-chip {
+    font-size: 11px; color: #7a7068;
+    background: rgba(255,255,255,0.04);
+    padding: 1px 7px; border-radius: 6px;
+  }
+  .ev-actions { display: flex; gap: 2px; align-items: center; }
+  .ev-act {
+    background: none; border: none;
+    font-size: 15px; cursor: pointer;
+    color: #5a5248; padding: 4px 5px;
+    border-radius: 6px; text-decoration: none;
+    transition: color 0.15s;
+  }
+  .ev-act:hover { color: #c8c0b0; }
+  .ev-act.del:hover { color: #f87171; }
 
-  const submit = () => {
-    if (!title.trim() || !date) return;
-    onSave({ title: title.trim(), date, time, icon, notes: notes.trim() });
-  };
+  /* FORMS */
+  .form-card {
+    background: rgba(255,255,255,0.03);
+    border: 1px solid;
+    border-radius: 12px; padding: 16px;
+    margin-bottom: 20px;
+    display: flex; flex-direction: column; gap: 12px;
+  }
+  .form-hdr {
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .form-title { font-size: 14px; font-weight: 600; }
+  .form-close {
+    background: none; border: none;
+    color: #5a5248; font-size: 20px; cursor: pointer;
+  }
+  .field-lbl {
+    font-family: 'DM Mono', monospace;
+    font-size: 10px; letter-spacing: 0.1em;
+    text-transform: uppercase; color: #5a5248;
+    display: block; margin-bottom: 4px;
+  }
+  .g-input {
+    width: 100%; padding: 10px 12px;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.07);
+    border-radius: 8px; color: #e8dcc8;
+    font-size: 14px; font-family: 'Outfit', sans-serif;
+    outline: none; resize: vertical;
+  }
+  .g-input::placeholder { color: #3a3630; }
+  .icon-grid {
+    display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px;
+  }
+  .icon-btn {
+    width: 38px; height: 38px; border-radius: 8px;
+    border: 1px solid rgba(255,255,255,0.07);
+    background: rgba(255,255,255,0.03);
+    font-size: 17px; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    transition: all 0.15s;
+  }
+  .icon-btn.sel {
+    border-color: rgba(240,168,50,0.5);
+    background: rgba(240,168,50,0.12);
+  }
+  .submit-btn {
+    padding: 12px; border-radius: 10px; border: none;
+    font-size: 14px; font-weight: 600;
+    font-family: 'Outfit', sans-serif; cursor: pointer;
+    letter-spacing: 0.02em;
+  }
 
-  return (
-    <div style={styles.eventForm}>
-      <div style={styles.txFormHeader}>
-        <span style={{ fontWeight: 600, color: "#c9a0ff" }}>
-          {event ? "Editar evento" : "Nuevo evento"}
-        </span>
-        <button onClick={onCancel} style={styles.txFormClose}>×</button>
-      </div>
+  /* FINANCE */
+  .kpi-row {
+    display: flex; gap: 8px; margin-bottom: 14px;
+  }
+  .kpi-card {
+    flex: 1; padding: 12px 10px;
+    background: rgba(255,255,255,0.03);
+    border: 1px solid rgba(255,255,255,0.05);
+    border-radius: 10px;
+    position: relative; overflow: hidden;
+  }
+  .kpi-arrow { font-size: 12px; margin-bottom: 4px; }
+  .kpi-label { font-size: 11px; color: #5a5248; margin-bottom: 4px; }
+  .kpi-val {
+    font-family: 'DM Mono', monospace;
+    font-size: 13px; font-weight: 500;
+  }
+  .month-card {
+    background: rgba(255,255,255,0.025);
+    border: 1px solid rgba(255,255,255,0.05);
+    border-radius: 10px; padding: 14px;
+    margin-bottom: 18px;
+  }
+  .month-top {
+    display: flex; justify-content: space-between;
+    align-items: center; margin-bottom: 12px;
+  }
+  .month-title {
+    font-family: 'DM Mono', monospace;
+    font-size: 11px; color: #5a5248;
+    letter-spacing: 0.08em; text-transform: uppercase;
+  }
+  .month-net {
+    font-family: 'DM Mono', monospace;
+    font-size: 14px; font-weight: 500;
+  }
+  .bar-row {
+    display: flex; align-items: center; gap: 10px;
+    margin-bottom: 8px;
+  }
+  .bar-label {
+    font-family: 'DM Mono', monospace;
+    font-size: 11px; width: 90px; flex-shrink: 0;
+  }
+  .bar-track {
+    flex: 1; height: 4px;
+    background: rgba(255,255,255,0.06);
+    border-radius: 2px; overflow: hidden;
+  }
+  .bar-fill { height: 100%; border-radius: 2px; transition: width 0.4s ease; }
+  .tx-btns { display: flex; gap: 8px; margin-bottom: 18px; }
+  .tx-btn {
+    flex: 1; padding: 12px; border-radius: 10px;
+    font-size: 14px; font-weight: 600;
+    font-family: 'Outfit', sans-serif; cursor: pointer; border: 1px solid;
+  }
+  .tx-exp { background: rgba(248,113,113,0.08); border-color: rgba(248,113,113,0.2); color: #f87171; }
+  .tx-inc { background: rgba(45,212,160,0.08); border-color: rgba(45,212,160,0.2); color: #2dd4a0; }
+  .cat-grid { display: flex; flex-wrap: wrap; gap: 6px; }
+  .cat-btn {
+    padding: 5px 11px; border-radius: 8px;
+    border: 1px solid rgba(255,255,255,0.08);
+    background: rgba(255,255,255,0.03);
+    color: #7a7068; font-size: 12px;
+    font-family: 'Outfit', sans-serif; cursor: pointer;
+    transition: all 0.15s;
+  }
+  .tx-list { display: flex; flex-direction: column; gap: 4px; }
+  .tx-row {
+    display: flex; justify-content: space-between;
+    align-items: center; padding: 10px 12px;
+    border-radius: 8px;
+    background: rgba(255,255,255,0.02);
+  }
+  .tx-l { display: flex; flex-direction: column; gap: 2px; }
+  .tx-cat { font-size: 13px; font-weight: 500; color: #c8c0b0; }
+  .tx-desc { font-size: 11px; color: #5a5248; }
+  .tx-r { display: flex; align-items: center; gap: 8px; }
+  .tx-amt {
+    font-family: 'DM Mono', monospace;
+    font-size: 13px; font-weight: 500;
+  }
+  .tx-del {
+    background: none; border: none;
+    color: #3a3630; font-size: 16px; cursor: pointer;
+    transition: color 0.15s;
+  }
+  .tx-del:hover { color: #f87171; }
 
-      <input
-        type="text"
-        placeholder="Título (ej: Médico, Cumpleaños...)"
-        value={title}
-        onChange={e => setTitle(e.target.value)}
-        style={styles.txInput}
-        autoFocus
-      />
-
-      <div style={styles.formRow}>
-        <div style={{ flex: 1 }}>
-          <label style={styles.formLabel}>Fecha</label>
-          <input
-            type="date"
-            value={date}
-            onChange={e => setDate(e.target.value)}
-            style={styles.txInput}
-          />
-        </div>
-        <div style={{ flex: 1 }}>
-          <label style={styles.formLabel}>Hora (opcional)</label>
-          <input
-            type="time"
-            value={time}
-            onChange={e => setTime(e.target.value)}
-            style={styles.txInput}
-          />
-        </div>
-      </div>
-
-      <label style={styles.formLabel}>Icono</label>
-      <div style={styles.iconGrid}>
-        {EVENT_ICONS.map(i => (
-          <button
-            key={i}
-            onClick={() => setIcon(i)}
-            style={{
-              ...styles.iconBtn,
-              ...(icon === i ? { background: "#c9a0ff22", borderColor: "#c9a0ff" } : {}),
-            }}
-          >
-            {i}
-          </button>
-        ))}
-      </div>
-
-      <textarea
-        placeholder="Notas (opcional)"
-        value={notes}
-        onChange={e => setNotes(e.target.value)}
-        style={{ ...styles.txInput, resize: "vertical", minHeight: 60, fontFamily: "'Outfit', sans-serif" }}
-      />
-
-      <button onClick={submit} style={{
-        ...styles.txSubmitBtn,
-        background: "#c9a0ff",
-        color: "#0a0a0f",
-      }}>
-        Guardar
-      </button>
-    </div>
-  );
-}
-
-function FinanceView({
-  transactions, totalIncome, totalExpense, balance,
-  monthIncome, monthExpense, monthKey,
-  showTxForm, setShowTxForm, txType, setTxType,
-  addTransaction, deleteTransaction
-}) {
-  return (
-    <div>
-      <div style={styles.financeCards}>
-        <div style={{ ...styles.fCard, borderLeft: "3px solid #4ade80" }}>
-          <span style={styles.fCardLabel}>Ingresos hoy</span>
-          <span style={{ ...styles.fCardValue, color: "#4ade80" }}>{formatMoney(totalIncome)}</span>
-        </div>
-        <div style={{ ...styles.fCard, borderLeft: "3px solid #f87171" }}>
-          <span style={styles.fCardLabel}>Gastos hoy</span>
-          <span style={{ ...styles.fCardValue, color: "#f87171" }}>{formatMoney(totalExpense)}</span>
-        </div>
-        <div style={{ ...styles.fCard, borderLeft: `3px solid ${balance >= 0 ? "#60a5fa" : "#fbbf24"}` }}>
-          <span style={styles.fCardLabel}>Balance hoy</span>
-          <span style={{ ...styles.fCardValue, color: balance >= 0 ? "#60a5fa" : "#fbbf24" }}>{formatMoney(balance)}</span>
-        </div>
-      </div>
-
-      <div style={styles.monthSummary}>
-        <span style={styles.monthLabel}>Resumen {monthKey}</span>
-        <div style={styles.monthRow}>
-          <span style={{ color: "#4ade80" }}>▲ {formatMoney(monthIncome)}</span>
-          <span style={{ color: "#f87171" }}>▼ {formatMoney(monthExpense)}</span>
-          <span style={{ color: monthIncome - monthExpense >= 0 ? "#60a5fa" : "#fbbf24", fontWeight: 600 }}>
-            = {formatMoney(monthIncome - monthExpense)}
-          </span>
-        </div>
-      </div>
-
-      {!showTxForm && (
-        <div style={styles.addTxBtns}>
-          <button onClick={() => { setTxType("expense"); setShowTxForm(true); }} style={styles.addExpenseBtn}>
-            − Gasto
-          </button>
-          <button onClick={() => { setTxType("income"); setShowTxForm(true); }} style={styles.addIncomeBtn}>
-            + Ingreso
-          </button>
-        </div>
-      )}
-
-      {showTxForm && (
-        <TransactionForm
-          type={txType}
-          onAdd={addTransaction}
-          onCancel={() => setShowTxForm(false)}
-        />
-      )}
-
-      {transactions.length > 0 ? (
-        <div style={styles.txList}>
-          {transactions.map(tx => (
-            <div key={tx.id} style={styles.txItem}>
-              <div style={styles.txLeft}>
-                <span style={styles.txCat}>{tx.category}</span>
-                {tx.description && <span style={styles.txDesc}>{tx.description}</span>}
-              </div>
-              <div style={styles.txRight}>
-                <span style={{
-                  ...styles.txAmount,
-                  color: tx.type === "income" ? "#4ade80" : "#f87171"
-                }}>
-                  {tx.type === "income" ? "+" : "−"}{formatMoney(tx.amount)}
-                </span>
-                <button onClick={() => deleteTransaction(tx.id)} style={styles.txDelete}>×</button>
-              </div>
-            </div>
-          ))}
-        </div>
-      ) : (
-        <div style={styles.emptyState}>
-          <span style={styles.emptyIcon}>💶</span>
-          <p style={styles.emptyText}>Sin movimientos este día</p>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function TransactionForm({ type, onAdd, onCancel }) {
-  const [amount, setAmount] = useState("");
-  const [category, setCategory] = useState(CATEGORIES[type][0]);
-  const [description, setDescription] = useState("");
-
-  const submit = () => {
-    const val = parseFloat(amount.replace(",", "."));
-    if (!val || val <= 0) return;
-    onAdd({ type, amount: val, category, description: description.trim() });
-  };
-
-  const cats = CATEGORIES[type];
-  const isExpense = type === "expense";
-
-  return (
-    <div style={{
-      ...styles.txForm,
-      borderColor: isExpense ? "#f8717133" : "#4ade8033",
-    }}>
-      <div style={styles.txFormHeader}>
-        <span style={{ fontWeight: 600, color: isExpense ? "#f87171" : "#4ade80" }}>
-          {isExpense ? "Nuevo gasto" : "Nuevo ingreso"}
-        </span>
-        <button onClick={onCancel} style={styles.txFormClose}>×</button>
-      </div>
-
-      <input
-        type="text"
-        inputMode="decimal"
-        placeholder="Cantidad (€)"
-        value={amount}
-        onChange={e => setAmount(e.target.value)}
-        style={styles.txInput}
-        autoFocus
-      />
-
-      <div style={styles.catGrid}>
-        {cats.map(c => (
-          <button
-            key={c}
-            onClick={() => setCategory(c)}
-            style={{
-              ...styles.catBtn,
-              ...(category === c ? {
-                background: isExpense ? "#f8717122" : "#4ade8022",
-                borderColor: isExpense ? "#f87171" : "#4ade80",
-              } : {}),
-            }}
-          >
-            {c}
-          </button>
-        ))}
-      </div>
-
-      <input
-        type="text"
-        placeholder="Descripción (opcional)"
-        value={description}
-        onChange={e => setDescription(e.target.value)}
-        onKeyDown={e => e.key === "Enter" && submit()}
-        style={styles.txInput}
-      />
-
-      <button onClick={submit} style={{
-        ...styles.txSubmitBtn,
-        background: isExpense ? "#f87171" : "#4ade80",
-        color: isExpense ? "#fff" : "#0a0a0f",
-      }}>
-        Guardar
-      </button>
-    </div>
-  );
-}
-
-const styles = {
-  root: {
-    minHeight: "100vh",
-    background: "#0a0a0f",
-    color: "#e0ddd5",
-    fontFamily: "'Outfit', sans-serif",
-    maxWidth: 520,
-    margin: "0 auto",
-    padding: "0 0 80px 0",
-  },
-  header: {
-    background: "linear-gradient(135deg, #0f0f18 0%, #151520 100%)",
-    borderBottom: "1px solid rgba(255,255,255,0.06)",
-    padding: "20px 20px 16px",
-    position: "sticky", top: 0, zIndex: 10,
-  },
-  headerInner: { display: "flex", flexDirection: "column", gap: 12 },
-  logo: { display: "flex", alignItems: "center", gap: 8 },
-  logoIcon: { fontSize: 22, color: "#c9a0ff" },
-  logoText: {
-    fontFamily: "'DM Mono', monospace",
-    fontSize: 18, fontWeight: 500, letterSpacing: "0.08em", color: "#c9a0ff",
-  },
-  dateNav: { display: "flex", alignItems: "center", gap: 12 },
-  navBtn: {
-    background: "rgba(255,255,255,0.05)",
-    border: "1px solid rgba(255,255,255,0.08)",
-    color: "#e0ddd5", borderRadius: 8, width: 36, height: 36,
-    fontSize: 16, cursor: "pointer",
-    display: "flex", alignItems: "center", justifyContent: "center",
-  },
-  dateBlock: { flex: 1, display: "flex", alignItems: "center", gap: 8 },
-  dateLabel: { fontSize: 15, fontWeight: 500, letterSpacing: "0.02em" },
-  todayBadge: {
-    fontFamily: "'DM Mono', monospace",
-    fontSize: 10, fontWeight: 500, letterSpacing: "0.15em",
-    background: "#c9a0ff22", color: "#c9a0ff",
-    padding: "2px 8px", borderRadius: 4,
-  },
-  goToday: {
-    fontFamily: "'DM Mono', monospace", fontSize: 11,
-    background: "transparent", border: "1px solid rgba(255,255,255,0.1)",
-    color: "#888", padding: "4px 12px", borderRadius: 6,
-    cursor: "pointer", alignSelf: "flex-start",
-  },
-  tabs: {
-    display: "flex", padding: "0 20px",
-    borderBottom: "1px solid rgba(255,255,255,0.06)", background: "#0c0c14",
-  },
-  tab: {
-    flex: 1, padding: "14px 0",
-    background: "transparent", border: "none",
-    borderBottom: "2px solid transparent",
-    color: "#666", fontSize: 14, fontWeight: 500,
-    fontFamily: "'Outfit', sans-serif", cursor: "pointer",
-    display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
-    transition: "all 0.2s",
-  },
-  tabActive: { color: "#e0ddd5", borderBottomColor: "#c9a0ff" },
-  tabIcon: { fontSize: 15 },
-  tabCount: {
-    fontFamily: "'DM Mono', monospace", fontSize: 11,
-    background: "rgba(255,255,255,0.06)", padding: "1px 6px", borderRadius: 4,
-  },
-  main: { padding: "20px" },
-  addTaskRow: { display: "flex", gap: 8, marginBottom: 20 },
-  addTaskInput: {
-    flex: 1, padding: "12px 16px",
-    background: "rgba(255,255,255,0.04)",
-    border: "1px solid rgba(255,255,255,0.08)",
-    borderRadius: 10, color: "#e0ddd5",
-    fontSize: 14, fontFamily: "'Outfit', sans-serif", outline: "none",
-  },
-  addBtn: {
-    width: 44, height: 44, borderRadius: 10,
-    background: "#c9a0ff", border: "none",
-    color: "#0a0a0f", fontSize: 22, fontWeight: 700, cursor: "pointer",
-    display: "flex", alignItems: "center", justifyContent: "center",
-  },
-  progressArea: { marginBottom: 24 },
-  progressBar: {
-    height: 4, background: "rgba(255,255,255,0.06)",
-    borderRadius: 2, overflow: "hidden", marginBottom: 6,
-  },
-  progressFill: {
-    height: "100%",
-    background: "linear-gradient(90deg, #c9a0ff, #a0d0ff)",
-    borderRadius: 2, transition: "width 0.4s ease",
-  },
-  progressText: {
-    fontFamily: "'DM Mono', monospace", fontSize: 11,
-    color: "#888", letterSpacing: "0.03em",
-  },
-  taskSection: { marginBottom: 20 },
-  taskSectionTitle: {
-    fontFamily: "'DM Mono', monospace",
-    fontSize: 11, fontWeight: 400,
-    letterSpacing: "0.12em", textTransform: "uppercase",
-    color: "#666", marginBottom: 8, padding: "0 4px",
-  },
-  taskItem: {
-    display: "flex", alignItems: "center", gap: 12,
-    padding: "10px 12px", borderRadius: 8,
-    transition: "background 0.15s", position: "relative",
-  },
-  checkbox: {
-    width: 22, height: 22, borderRadius: 6,
-    border: "none", background: "transparent", cursor: "pointer",
-    display: "flex", alignItems: "center", justifyContent: "center",
-    padding: 0, flexShrink: 0,
-  },
-  unchecked: {
-    width: 20, height: 20, borderRadius: 6,
-    border: "2px solid rgba(255,255,255,0.15)", display: "block",
-  },
-  checked: {
-    width: 20, height: 20, borderRadius: 6,
-    background: "#c9a0ff", color: "#0a0a0f",
-    fontSize: 13, fontWeight: 700,
-    display: "flex", alignItems: "center", justifyContent: "center",
-  },
-  taskContent: { flex: 1, display: "flex", flexDirection: "column", gap: 2 },
-  taskText: { fontSize: 14, lineHeight: 1.4 },
-  carriedBadge: {
-    fontFamily: "'DM Mono', monospace", fontSize: 10,
-    color: "#c9a0ff88", letterSpacing: "0.03em",
-  },
-  deleteBtn: {
-    background: "transparent", border: "none",
-    color: "#f8717188", fontSize: 18, cursor: "pointer", padding: "0 4px",
-  },
-  emptyState: { textAlign: "center", padding: "48px 20px", opacity: 0.6 },
-  emptyIcon: { fontSize: 36, display: "block", marginBottom: 12 },
-  emptyText: { fontSize: 15, fontWeight: 500, marginBottom: 4 },
-  emptySubtext: { fontSize: 13, color: "#888" },
-  notifBanner: {
-    background: "rgba(201, 160, 255, 0.08)",
-    border: "1px solid rgba(201, 160, 255, 0.2)",
-    borderRadius: 10, padding: "10px 14px",
-    display: "flex", justifyContent: "space-between", alignItems: "center",
-    marginBottom: 16, gap: 12,
-  },
-  notifBtn: {
-    background: "#c9a0ff", color: "#0a0a0f",
-    border: "none", borderRadius: 6,
-    padding: "6px 12px", fontSize: 12, fontWeight: 600,
-    cursor: "pointer", fontFamily: "'Outfit', sans-serif",
-  },
-  addEventBtn: {
-    width: "100%", padding: "12px",
-    background: "rgba(201, 160, 255, 0.1)",
-    border: "1px solid rgba(201, 160, 255, 0.3)",
-    borderRadius: 10, color: "#c9a0ff",
-    fontSize: 14, fontWeight: 600,
-    fontFamily: "'Outfit', sans-serif",
-    cursor: "pointer", marginBottom: 20,
-  },
-  agendaGroup: { marginBottom: 16 },
-  agendaDateHeader: {
-    display: "flex", justifyContent: "space-between",
-    padding: "6px 12px", marginBottom: 4,
-  },
-  agendaDateText: { fontSize: 13, fontWeight: 600, color: "#c9a0ff" },
-  agendaDaysLeft: {
-    fontFamily: "'DM Mono', monospace",
-    fontSize: 11, color: "#888",
-  },
-  eventItem: {
-    display: "flex", alignItems: "center", gap: 12,
-    padding: "12px", borderRadius: 8,
-    background: "rgba(255,255,255,0.03)", marginBottom: 4,
-  },
-  eventIcon: { fontSize: 22, flexShrink: 0 },
-  eventContent: { flex: 1, display: "flex", flexDirection: "column", gap: 2, minWidth: 0 },
-  eventTitle: { fontSize: 14, fontWeight: 500 },
-  eventMeta: { display: "flex", gap: 10, flexWrap: "wrap" },
-  eventTime: { fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#888" },
-  eventNotes: { fontSize: 11, color: "#888", fontStyle: "italic" },
-  eventActions: { display: "flex", gap: 4, alignItems: "center" },
-  gcalBtn: {
-    background: "transparent", border: "none",
-    fontSize: 16, cursor: "pointer",
-    textDecoration: "none", padding: "4px 6px",
-    borderRadius: 4,
-  },
-  editBtn: {
-    background: "transparent", border: "none",
-    color: "#888", fontSize: 14, cursor: "pointer",
-    padding: "4px 6px",
-  },
-  eventForm: {
-    background: "rgba(255,255,255,0.03)",
-    border: "1px solid rgba(201, 160, 255, 0.3)",
-    borderRadius: 12, padding: 16, marginBottom: 20,
-    display: "flex", flexDirection: "column", gap: 12,
-  },
-  formRow: { display: "flex", gap: 8 },
-  formLabel: {
-    fontFamily: "'DM Mono', monospace",
-    fontSize: 10, letterSpacing: "0.1em",
-    textTransform: "uppercase", color: "#888",
-    marginBottom: 4, display: "block",
-  },
-  iconGrid: { display: "flex", flexWrap: "wrap", gap: 6 },
-  iconBtn: {
-    width: 40, height: 40, borderRadius: 8,
-    border: "1px solid rgba(255,255,255,0.08)",
-    background: "rgba(255,255,255,0.03)",
-    fontSize: 18, cursor: "pointer",
-    display: "flex", alignItems: "center", justifyContent: "center",
-    transition: "all 0.15s",
-  },
-  financeCards: { display: "flex", flexDirection: "column", gap: 8, marginBottom: 16 },
-  fCard: {
-    background: "rgba(255,255,255,0.03)", borderRadius: 10,
-    padding: "12px 16px",
-    display: "flex", justifyContent: "space-between", alignItems: "center",
-  },
-  fCardLabel: { fontSize: 13, color: "#888" },
-  fCardValue: { fontFamily: "'DM Mono', monospace", fontSize: 15, fontWeight: 500 },
-  monthSummary: {
-    background: "rgba(255,255,255,0.02)",
-    border: "1px solid rgba(255,255,255,0.05)",
-    borderRadius: 10, padding: "12px 16px", marginBottom: 20,
-  },
-  monthLabel: {
-    fontFamily: "'DM Mono', monospace", fontSize: 11,
-    color: "#666", letterSpacing: "0.08em",
-    textTransform: "uppercase", display: "block", marginBottom: 8,
-  },
-  monthRow: {
-    display: "flex", justifyContent: "space-between",
-    fontFamily: "'DM Mono', monospace", fontSize: 12,
-  },
-  addTxBtns: { display: "flex", gap: 8, marginBottom: 20 },
-  addExpenseBtn: {
-    flex: 1, padding: "12px", borderRadius: 10,
-    border: "1px solid #f8717133", background: "#f8717111",
-    color: "#f87171", fontSize: 14, fontWeight: 600,
-    fontFamily: "'Outfit', sans-serif", cursor: "pointer",
-  },
-  addIncomeBtn: {
-    flex: 1, padding: "12px", borderRadius: 10,
-    border: "1px solid #4ade8033", background: "#4ade8011",
-    color: "#4ade80", fontSize: 14, fontWeight: 600,
-    fontFamily: "'Outfit', sans-serif", cursor: "pointer",
-  },
-  txForm: {
-    background: "rgba(255,255,255,0.03)",
-    border: "1px solid", borderRadius: 12,
-    padding: 16, marginBottom: 20,
-    display: "flex", flexDirection: "column", gap: 12,
-  },
-  txFormHeader: {
-    display: "flex", justifyContent: "space-between", alignItems: "center",
-  },
-  txFormClose: {
-    background: "transparent", border: "none",
-    color: "#888", fontSize: 20, cursor: "pointer",
-  },
-  txInput: {
-    padding: "10px 14px",
-    background: "rgba(255,255,255,0.04)",
-    border: "1px solid rgba(255,255,255,0.08)",
-    borderRadius: 8, color: "#e0ddd5",
-    fontSize: 14, fontFamily: "'Outfit', sans-serif", outline: "none",
-    width: "100%", boxSizing: "border-box",
-  },
-  catGrid: { display: "flex", flexWrap: "wrap", gap: 6 },
-  catBtn: {
-    padding: "6px 12px", borderRadius: 8,
-    border: "1px solid rgba(255,255,255,0.08)",
-    background: "rgba(255,255,255,0.03)",
-    color: "#e0ddd5", fontSize: 12,
-    fontFamily: "'Outfit', sans-serif",
-    cursor: "pointer", transition: "all 0.15s",
-  },
-  txSubmitBtn: {
-    padding: "12px", borderRadius: 10, border: "none",
-    fontSize: 14, fontWeight: 600,
-    fontFamily: "'Outfit', sans-serif", cursor: "pointer",
-  },
-  txList: { display: "flex", flexDirection: "column", gap: 4 },
-  txItem: {
-    display: "flex", justifyContent: "space-between", alignItems: "center",
-    padding: "10px 12px", borderRadius: 8,
-    background: "rgba(255,255,255,0.02)",
-  },
-  txLeft: { display: "flex", flexDirection: "column", gap: 2 },
-  txCat: { fontSize: 13, fontWeight: 500 },
-  txDesc: { fontSize: 11, color: "#888" },
-  txRight: { display: "flex", alignItems: "center", gap: 8 },
-  txAmount: { fontFamily: "'DM Mono', monospace", fontSize: 14, fontWeight: 500 },
-  txDelete: {
-    background: "transparent", border: "none",
-    color: "#666", fontSize: 16, cursor: "pointer",
-  },
-};
-
-export default App;
+  /* EMPTY STATE */
+  .empty { text-align: center; padding: 48px 20px; opacity: 0.5; }
+  .empty-glyph {
+    font-size: 32px; display: block;
+    margin-bottom: 12px; color: #3a3630;
+    font-family: 'DM Mono', monospace;
+  }
+  .empty-txt { font-size: 15px; font-weight: 500; color: #7a7068; margin-bottom: 4px; }
+  .empty-sub { font-size: 12px; color: #3a3630; }
+`;
