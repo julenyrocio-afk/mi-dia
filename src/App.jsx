@@ -68,6 +68,8 @@ export default function App() {
   const [showEventForm,setShowEventForm]=useState(false);
   const [editingEvent,setEditingEvent]=useState(null);
   const [activeNote,setActiveNote]=useState(null); // null=list, id=editing
+  const [activeFolder,setActiveFolder]=useState(null); // null=todas, "__pinned"=fijadas, id=carpeta
+  const [showFolderForm,setShowFolderForm]=useState(false);
   const taskInputRef=useRef(null);
 
   useEffect(()=>{
@@ -78,11 +80,13 @@ export default function App() {
           const p=JSON.parse(r.value);
           if(!p.events) p.events=[];
           if(!p.notes) p.notes=[];
+          if(!p.folders) p.folders=[];
+          p.notes=p.notes.map(n=>({folderId:null,pinned:false,...n}));
           setData(p);
         } else {
-          setData({tasks:{},transactions:{},events:[],notes:[]});
+          setData({tasks:{},transactions:{},events:[],notes:[],folders:[]});
         }
-      }catch{ setData({tasks:{},transactions:{},events:[],notes:[]}); }
+      }catch{ setData({tasks:{},transactions:{},events:[],notes:[],folders:[]}); }
       setLoading(false);
     })();
   },[]);
@@ -208,7 +212,7 @@ export default function App() {
 
   // Notes CRUD
   const createNote=()=>{
-    const note={id:uid(),title:"",body:"",updatedAt:Date.now()};
+    const note={id:uid(),title:"",body:"",folderId:activeFolder && activeFolder!=="__pinned" ? activeFolder : null,pinned:false,updatedAt:Date.now()};
     const newNotes=[note,...(data.notes||[])];
     save({...data,notes:newNotes});
     setActiveNote(note.id);
@@ -220,6 +224,31 @@ export default function App() {
   const deleteNote=(id)=>{
     save({...data,notes:(data.notes||[]).filter(n=>n.id!==id)});
     setActiveNote(null);
+  };
+  const togglePinNote=(id)=>{
+    const newNotes=(data.notes||[]).map(n=>n.id===id?{...n,pinned:!n.pinned}:n);
+    save({...data,notes:newNotes});
+  };
+  const moveNoteToFolder=(id,folderId)=>{
+    const newNotes=(data.notes||[]).map(n=>n.id===id?{...n,folderId,updatedAt:Date.now()}:n);
+    save({...data,notes:newNotes});
+  };
+  // Folders CRUD
+  const createFolder=(name,color)=>{
+    if(!name.trim()) return;
+    const folder={id:uid(),name:name.trim(),color:color||"#f0a832",createdAt:Date.now()};
+    save({...data,folders:[...(data.folders||[]),folder]});
+    setShowFolderForm(false);
+  };
+  const renameFolder=(id,name)=>{
+    if(!name.trim()) return;
+    save({...data,folders:(data.folders||[]).map(f=>f.id===id?{...f,name:name.trim()}:f)});
+  };
+  const deleteFolder=(id)=>{
+    // Move notes in this folder to no folder
+    const newNotes=(data.notes||[]).map(n=>n.folderId===id?{...n,folderId:null}:n);
+    save({...data,notes:newNotes,folders:(data.folders||[]).filter(f=>f.id!==id)});
+    if(activeFolder===id) setActiveFolder(null);
   };
 
   const navigateDate=(dir)=>setSelectedDate(addDays(selectedDate,dir));
@@ -278,12 +307,21 @@ export default function App() {
         {activeTab==="notes" && (
           <div style={{paddingBottom:4}}>
             <div className="date-big" style={{fontSize:22}}>
-              {activeNote ? (data.notes||[]).find(n=>n.id===activeNote)?.title||"Nueva nota" : "Notas"}
+              {activeNote
+                ? (data.notes||[]).find(n=>n.id===activeNote)?.title||"Nueva nota"
+                : activeFolder==="__pinned"
+                  ? "📌 Fijadas"
+                  : activeFolder
+                    ? (data.folders||[]).find(f=>f.id===activeFolder)?.name||"Carpeta"
+                    : "Notas"
+              }
             </div>
             <div className="date-sub">
               {activeNote
                 ? <button className="today-chip" onClick={()=>setActiveNote(null)}>← Volver</button>
-                : `${(data.notes||[]).length} nota${(data.notes||[]).length!==1?"s":""}`
+                : activeFolder
+                  ? <button className="today-chip" onClick={()=>setActiveFolder(null)}>← Todas</button>
+                  : `${(data.notes||[]).length} nota${(data.notes||[]).length!==1?"s":""} · ${(data.folders||[]).length} carpeta${(data.folders||[]).length!==1?"s":""}`
               }
             </div>
           </div>
@@ -316,14 +354,27 @@ export default function App() {
           activeNote
             ? <NoteEditor
                 note={(data.notes||[]).find(n=>n.id===activeNote)}
+                folders={data.folders||[]}
                 onUpdate={updateNote}
                 onDelete={deleteNote}
+                onTogglePin={togglePinNote}
+                onMoveToFolder={moveNoteToFolder}
                 onBack={()=>setActiveNote(null)}/>
             : <NotesListView
                 notes={data.notes||[]}
+                folders={data.folders||[]}
+                activeFolder={activeFolder}
+                setActiveFolder={setActiveFolder}
                 onCreate={createNote}
                 onOpen={setActiveNote}
-                onDelete={deleteNote}/>
+                onDelete={deleteNote}
+                onTogglePin={togglePinNote}
+                onMoveToFolder={moveNoteToFolder}
+                showFolderForm={showFolderForm}
+                setShowFolderForm={setShowFolderForm}
+                onCreateFolder={createFolder}
+                onRenameFolder={renameFolder}
+                onDeleteFolder={deleteFolder}/>
         )}
       </main>
 
@@ -498,36 +549,239 @@ function TaskGroup({label,items,group,onToggle,onDelete,onReorder,dim}){
 }
 
 // ── NOTES VIEW ────────────────────────────────────────────────────────────────
-function NotesListView({notes,onCreate,onOpen,onDelete}){
-  const sorted=[...notes].sort((a,b)=>b.updatedAt-a.updatedAt);
+function NotesListView({notes,folders,activeFolder,setActiveFolder,onCreate,onOpen,onDelete,onTogglePin,onMoveToFolder,showFolderForm,setShowFolderForm,onCreateFolder,onRenameFolder,onDeleteFolder}){
+  const [menuFor,setMenuFor]=useState(null); // note id whose actions menu is open
+
+  // Filter notes by active folder
+  let visible = notes;
+  if(activeFolder==="__pinned") visible = notes.filter(n=>n.pinned);
+  else if(activeFolder) visible = notes.filter(n=>n.folderId===activeFolder);
+
+  // Sort: pinned first, then by date
+  const sorted=[...visible].sort((a,b)=>{
+    if(!!b.pinned-!!a.pinned!==0) return (!!b.pinned)-(!!a.pinned);
+    return b.updatedAt-a.updatedAt;
+  });
+
+  const pinnedCount = notes.filter(n=>n.pinned).length;
+  const noFolderCount = notes.filter(n=>!n.folderId).length;
+
   return(
-    <div style={{width:"100%"}}>
-      <button className="add-event-btn" style={{borderColor:"rgba(240,168,50,0.2)",color:"#f0a832",background:"rgba(240,168,50,0.08)"}} onClick={onCreate}>
-        + Nueva nota
+    <div style={{width:"100%"}} onClick={()=>setMenuFor(null)}>
+      {/* Folder chips bar */}
+      <div className="folder-bar">
+        <button
+          className={`folder-chip${!activeFolder?" active":""}`}
+          onClick={(e)=>{e.stopPropagation();setActiveFolder(null);}}
+        >
+          <span className="folder-chip-dot" style={{background:"#7a7068"}}/>
+          Todas <span className="folder-chip-count">{notes.length}</span>
+        </button>
+        {pinnedCount>0 && (
+          <button
+            className={`folder-chip${activeFolder==="__pinned"?" active":""}`}
+            onClick={(e)=>{e.stopPropagation();setActiveFolder("__pinned");}}
+          >
+            📌 Fijadas <span className="folder-chip-count">{pinnedCount}</span>
+          </button>
+        )}
+        {folders.map(f=>(
+          <button
+            key={f.id}
+            className={`folder-chip${activeFolder===f.id?" active":""}`}
+            onClick={(e)=>{e.stopPropagation();setActiveFolder(f.id);}}
+          >
+            <span className="folder-chip-dot" style={{background:f.color||"#f0a832"}}/>
+            {f.name} <span className="folder-chip-count">{notes.filter(n=>n.folderId===f.id).length}</span>
+          </button>
+        ))}
+        <button
+          className="folder-chip add"
+          onClick={(e)=>{e.stopPropagation();setShowFolderForm(s=>!s);}}
+        >＋ Carpeta</button>
+      </div>
+
+      {showFolderForm && (
+        <FolderForm
+          onCreate={onCreateFolder}
+          onCancel={()=>setShowFolderForm(false)}
+        />
+      )}
+
+      {/* Folder management when one is active */}
+      {activeFolder && activeFolder!=="__pinned" && (
+        <FolderManageBar
+          folder={folders.find(f=>f.id===activeFolder)}
+          onRename={onRenameFolder}
+          onDelete={onDeleteFolder}
+        />
+      )}
+
+      <button
+        className="add-event-btn"
+        style={{borderColor:"rgba(240,168,50,0.2)",color:"#f0a832",background:"rgba(240,168,50,0.08)"}}
+        onClick={(e)=>{e.stopPropagation();onCreate();}}
+      >
+        + Nueva nota{activeFolder && activeFolder!=="__pinned" ? ` en "${folders.find(f=>f.id===activeFolder)?.name}"` : ""}
       </button>
+
       {sorted.length>0 ? (
         <div className="notes-list">
-          {sorted.map(note=>(
-            <div key={note.id} className="note-card" onClick={()=>onOpen(note.id)}>
-              <div className="note-card-inner">
-                <div className="note-card-title">{note.title||"Sin título"}</div>
-                <div className="note-card-preview">{note.body ? note.body.split("\n")[0].slice(0,80) : "Toca para editar…"}</div>
-                <div className="note-card-date">{formatNoteDate(note.updatedAt)}</div>
+          {sorted.map(note=>{
+            const folder=folders.find(f=>f.id===note.folderId);
+            return(
+              <div key={note.id} className={`note-card${note.pinned?" pinned":""}`} onClick={()=>onOpen(note.id)}>
+                {note.pinned && <span className="note-pin-badge">📌</span>}
+                {folder && <span className="note-folder-stripe" style={{background:folder.color||"#f0a832"}}/>}
+                <div className="note-card-inner">
+                  <div className="note-card-title">{note.title||"Sin título"}</div>
+                  <div className="note-card-preview">{note.body ? note.body.split("\n")[0].slice(0,80) : "Toca para editar…"}</div>
+                  <div className="note-card-foot">
+                    {folder && (
+                      <span className="note-card-folder" style={{color:folder.color||"#f0a832"}}>
+                        <span className="folder-chip-dot" style={{background:folder.color||"#f0a832"}}/>
+                        {folder.name}
+                      </span>
+                    )}
+                    <span className="note-card-date">{formatNoteDate(note.updatedAt)}</span>
+                  </div>
+                </div>
+                <div className="note-actions" onClick={e=>e.stopPropagation()}>
+                  <button
+                    className={`note-act-btn${note.pinned?" active":""}`}
+                    onClick={()=>onTogglePin(note.id)}
+                    title={note.pinned?"Desfijar":"Fijar"}
+                  >📌</button>
+                  <button
+                    className="note-act-btn"
+                    onClick={()=>setMenuFor(menuFor===note.id?null:note.id)}
+                    title="Mover a carpeta"
+                  >🗂</button>
+                  <button className="note-del-btn" onClick={()=>onDelete(note.id)}>×</button>
+                  {menuFor===note.id && (
+                    <div className="folder-menu" onClick={e=>e.stopPropagation()}>
+                      <div className="folder-menu-label">Mover a…</div>
+                      <button
+                        className={`folder-menu-item${!note.folderId?" sel":""}`}
+                        onClick={()=>{onMoveToFolder(note.id,null);setMenuFor(null);}}
+                      >
+                        <span className="folder-chip-dot" style={{background:"#7a7068"}}/>
+                        Sin carpeta
+                      </button>
+                      {folders.map(f=>(
+                        <button
+                          key={f.id}
+                          className={`folder-menu-item${note.folderId===f.id?" sel":""}`}
+                          onClick={()=>{onMoveToFolder(note.id,f.id);setMenuFor(null);}}
+                        >
+                          <span className="folder-chip-dot" style={{background:f.color||"#f0a832"}}/>
+                          {f.name}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
-              <button className="note-del-btn" onClick={e=>{e.stopPropagation();onDelete(note.id);}}>×</button>
-            </div>
-          ))}
+            );
+          })}
         </div>
       ) : (
-        <Empty glyph="✎" txt="Sin notas" sub="Crea tu primera nota arriba"/>
+        <Empty
+          glyph={activeFolder==="__pinned"?"📌":"✎"}
+          txt={activeFolder==="__pinned"?"Sin notas fijadas":activeFolder?"Carpeta vacía":"Sin notas"}
+          sub={activeFolder?"Crea una nota o muévela aquí":"Crea tu primera nota arriba"}
+        />
       )}
     </div>
   );
 }
 
-function NoteEditor({note,onUpdate,onDelete,onBack}){
+function FolderForm({onCreate,onCancel}){
+  const [name,setName]=useState("");
+  const [color,setColor]=useState("#f0a832");
+  const COLORS=["#f0a832","#60b8f0","#2dd4a0","#f87171","#c084fc","#fbbf24","#7a7068"];
+  return(
+    <div className="form-card" style={{borderColor:"rgba(240,168,50,0.18)",marginBottom:14}}>
+      <div className="form-hdr">
+        <span className="form-title" style={{color:"#f0a832"}}>Nueva carpeta</span>
+        <button className="form-close" onClick={onCancel}>×</button>
+      </div>
+      <input
+        className="g-input"
+        type="text"
+        placeholder="Nombre de la carpeta…"
+        value={name}
+        onChange={e=>setName(e.target.value)}
+        onKeyDown={e=>e.key==="Enter"&&onCreate(name,color)}
+        autoFocus
+      />
+      <div>
+        <label className="field-lbl">Color</label>
+        <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+          {COLORS.map(c=>(
+            <button
+              key={c}
+              onClick={()=>setColor(c)}
+              style={{
+                width:30,height:30,borderRadius:"50%",
+                background:c,
+                border:color===c?"2px solid #e8dcc8":"2px solid transparent",
+                cursor:"pointer",
+                boxShadow:color===c?`0 0 0 2px ${c}`:"none",
+                transition:"box-shadow 0.15s",
+              }}
+            />
+          ))}
+        </div>
+      </div>
+      <button
+        className="submit-btn"
+        style={{background:"linear-gradient(135deg,#f0a832,#e08820)",color:"#09080a"}}
+        onClick={()=>onCreate(name,color)}
+      >Crear carpeta</button>
+    </div>
+  );
+}
+
+function FolderManageBar({folder,onRename,onDelete}){
+  const [editing,setEditing]=useState(false);
+  const [name,setName]=useState(folder?.name||"");
+  if(!folder) return null;
+  return(
+    <div className="folder-manage-bar">
+      {editing ? (
+        <>
+          <input
+            className="g-input"
+            style={{flex:1,padding:"6px 10px",fontSize:13}}
+            value={name}
+            onChange={e=>setName(e.target.value)}
+            onKeyDown={e=>{if(e.key==="Enter"){onRename(folder.id,name);setEditing(false);}}}
+            autoFocus
+          />
+          <button className="folder-manage-btn" onClick={()=>{onRename(folder.id,name);setEditing(false);}}>✓</button>
+          <button className="folder-manage-btn" onClick={()=>{setName(folder.name);setEditing(false);}}>×</button>
+        </>
+      ) : (
+        <>
+          <span className="folder-chip-dot" style={{background:folder.color||"#f0a832",width:10,height:10}}/>
+          <span style={{flex:1,fontSize:13,color:"#c8c0b0",fontWeight:500}}>{folder.name}</span>
+          <button className="folder-manage-btn" onClick={()=>setEditing(true)} title="Renombrar">✎</button>
+          <button
+            className="folder-manage-btn del"
+            onClick={()=>{if(window.confirm(`¿Eliminar la carpeta "${folder.name}"? Las notas no se borrarán.`)) onDelete(folder.id);}}
+            title="Eliminar carpeta"
+          >🗑</button>
+        </>
+      )}
+    </div>
+  );
+}
+
+function NoteEditor({note,folders,onUpdate,onDelete,onTogglePin,onMoveToFolder,onBack}){
   const [title,setTitle]=useState(note?.title||"");
   const [body,setBody]=useState(note?.body||"");
+  const [showFolderPicker,setShowFolderPicker]=useState(false);
   const saveTimeout=useRef(null);
 
   const handleTitle=(v)=>{
@@ -548,8 +802,53 @@ function NoteEditor({note,onUpdate,onDelete,onBack}){
   };
 
   if(!note) return null;
+  const currentFolder=folders.find(f=>f.id===note.folderId);
   return(
     <div style={{width:"100%",display:"flex",flexDirection:"column",gap:12}}>
+      <div className="note-meta-bar">
+        <button
+          className={`note-act-btn${note.pinned?" active":""}`}
+          onClick={()=>onTogglePin(note.id)}
+          title={note.pinned?"Desfijar":"Fijar nota"}
+        >📌 {note.pinned?"Fijada":"Fijar"}</button>
+        <button
+          className="note-act-btn"
+          onClick={()=>setShowFolderPicker(p=>!p)}
+          style={currentFolder?{color:currentFolder.color,borderColor:`${currentFolder.color}55`}:undefined}
+        >
+          {currentFolder ? (
+            <>
+              <span className="folder-chip-dot" style={{background:currentFolder.color||"#f0a832"}}/>
+              {currentFolder.name}
+            </>
+          ) : "🗂 Sin carpeta"}
+        </button>
+        {showFolderPicker && (
+          <div className="folder-menu" style={{top:42,right:0,left:"auto"}} onClick={e=>e.stopPropagation()}>
+            <div className="folder-menu-label">Mover a…</div>
+            <button
+              className={`folder-menu-item${!note.folderId?" sel":""}`}
+              onClick={()=>{onMoveToFolder(note.id,null);setShowFolderPicker(false);}}
+            >
+              <span className="folder-chip-dot" style={{background:"#7a7068"}}/>
+              Sin carpeta
+            </button>
+            {folders.map(f=>(
+              <button
+                key={f.id}
+                className={`folder-menu-item${note.folderId===f.id?" sel":""}`}
+                onClick={()=>{onMoveToFolder(note.id,f.id);setShowFolderPicker(false);}}
+              >
+                <span className="folder-chip-dot" style={{background:f.color||"#f0a832"}}/>
+                {f.name}
+              </button>
+            ))}
+            {folders.length===0 && (
+              <div style={{padding:"8px 10px",fontSize:11,color:"#5a5248"}}>No hay carpetas. Créalas en la lista.</div>
+            )}
+          </div>
+        )}
+      </div>
       <input
         className="note-title-input"
         type="text"
@@ -1061,15 +1360,83 @@ const CSS = `
   .task-del:hover { color: #f87171; }
 
   /* NOTES */
+  .folder-bar {
+    display: flex; gap: 6px; flex-wrap: wrap;
+    margin-bottom: 14px; width: 100%;
+  }
+  .folder-chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 6px 11px; border-radius: 16px;
+    background: rgba(255,255,255,0.03);
+    border: 1px solid rgba(255,255,255,0.06);
+    color: #c8c0b0; font-size: 12px; font-weight: 500;
+    font-family: 'Outfit', sans-serif; cursor: pointer;
+    transition: all 0.15s;
+  }
+  .folder-chip:hover { background: rgba(255,255,255,0.06); border-color: rgba(255,255,255,0.12); }
+  .folder-chip.active {
+    background: rgba(240,168,50,0.14);
+    border-color: rgba(240,168,50,0.4);
+    color: #f0a832;
+  }
+  .folder-chip.add {
+    color: #7a7068; border-style: dashed;
+    border-color: rgba(255,255,255,0.1);
+  }
+  .folder-chip.add:hover { color: #f0a832; border-color: rgba(240,168,50,0.4); }
+  .folder-chip-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .folder-chip-count {
+    font-family: 'DM Mono', monospace;
+    font-size: 10px; color: #5a5248;
+    background: rgba(255,255,255,0.04);
+    padding: 1px 6px; border-radius: 8px;
+    margin-left: 2px;
+  }
+  .folder-chip.active .folder-chip-count {
+    background: rgba(240,168,50,0.18); color: #f0a832;
+  }
+  .folder-manage-bar {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 12px; margin-bottom: 12px;
+    background: rgba(255,255,255,0.025);
+    border: 1px solid rgba(255,255,255,0.05);
+    border-radius: 8px; width: 100%;
+  }
+  .folder-manage-btn {
+    background: none; border: 1px solid rgba(255,255,255,0.07);
+    color: #7a7068; font-size: 13px; cursor: pointer;
+    width: 28px; height: 28px; border-radius: 6px;
+    display: flex; align-items: center; justify-content: center;
+    transition: all 0.15s;
+  }
+  .folder-manage-btn:hover { color: #f0a832; border-color: rgba(240,168,50,0.3); }
+  .folder-manage-btn.del:hover { color: #f87171; border-color: rgba(248,113,113,0.3); }
+
   .notes-list { display: flex; flex-direction: column; gap: 8px; width: 100%; }
   .note-card {
-    display: flex; align-items: stretch;
+    display: flex; align-items: stretch; position: relative;
     background: rgba(255,255,255,0.025);
     border: 1px solid rgba(255,255,255,0.04);
-    border-radius: 10px; overflow: hidden;
+    border-radius: 10px; overflow: visible;
     cursor: pointer; transition: background 0.15s; width: 100%;
   }
   .note-card:hover { background: rgba(255,255,255,0.04); }
+  .note-card.pinned {
+    background: rgba(240,168,50,0.05);
+    border-color: rgba(240,168,50,0.2);
+  }
+  .note-pin-badge {
+    position: absolute; top: 8px; right: 110px;
+    font-size: 11px; opacity: 0.85;
+    pointer-events: none;
+  }
+  .note-folder-stripe {
+    width: 3px; flex-shrink: 0;
+    border-radius: 10px 0 0 10px;
+  }
   .note-card-inner {
     flex: 1; padding: 12px 14px;
     display: flex; flex-direction: column; gap: 3px; min-width: 0;
@@ -1082,9 +1449,74 @@ const CSS = `
     font-size: 12px; color: #5a5248;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
+  .note-card-foot {
+    display: flex; align-items: center; gap: 8px;
+    margin-top: 4px;
+  }
+  .note-card-folder {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-size: 10px; font-weight: 500;
+    font-family: 'DM Mono', monospace;
+    text-transform: uppercase; letter-spacing: 0.05em;
+  }
   .note-card-date {
     font-family: 'DM Mono', monospace;
-    font-size: 10px; color: #3a3630; margin-top: 2px;
+    font-size: 10px; color: #3a3630;
+  }
+  .note-actions {
+    display: flex; align-items: center;
+    border-left: 1px solid rgba(255,255,255,0.04);
+    position: relative;
+  }
+  .note-act-btn {
+    background: none; border: 1px solid rgba(255,255,255,0.06);
+    color: #5a5248; font-size: 13px; cursor: pointer;
+    padding: 6px 10px; margin: 8px 4px;
+    border-radius: 6px;
+    display: inline-flex; align-items: center; gap: 4px;
+    font-family: 'Outfit', sans-serif;
+    transition: all 0.15s;
+  }
+  .note-act-btn:hover { color: #f0a832; border-color: rgba(240,168,50,0.3); }
+  .note-act-btn.active {
+    color: #f0a832; background: rgba(240,168,50,0.12);
+    border-color: rgba(240,168,50,0.35);
+  }
+  .note-meta-bar {
+    display: flex; align-items: center; gap: 8px;
+    position: relative; flex-wrap: wrap;
+  }
+  .folder-menu {
+    position: absolute; top: 100%; right: 4px;
+    margin-top: 4px;
+    background: #161318;
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 8px;
+    padding: 6px;
+    min-width: 180px;
+    z-index: 50;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+    animation: fadein 0.15s ease;
+  }
+  .folder-menu-label {
+    font-family: 'DM Mono', monospace;
+    font-size: 9px; letter-spacing: 0.12em;
+    text-transform: uppercase; color: #5a5248;
+    padding: 4px 8px 6px;
+  }
+  .folder-menu-item {
+    display: flex; align-items: center; gap: 8px;
+    width: 100%; padding: 7px 8px;
+    background: none; border: none;
+    color: #c8c0b0; font-size: 13px;
+    font-family: 'Outfit', sans-serif;
+    cursor: pointer; border-radius: 6px;
+    text-align: left;
+    transition: background 0.12s;
+  }
+  .folder-menu-item:hover { background: rgba(255,255,255,0.05); }
+  .folder-menu-item.sel {
+    background: rgba(240,168,50,0.1); color: #f0a832;
   }
   .note-del-btn {
     background: none; border: none; border-left: 1px solid rgba(255,255,255,0.04);
