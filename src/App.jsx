@@ -153,6 +153,24 @@ export default function App() {
     nt[selectedDate]=(nt[selectedDate]||[]).filter(t=>t.id!==id);
     save({...data,tasks:nt});
   };
+  // Move a task within its sub-group (pending or done) up or down.
+  // Reorders the underlying array so that the visual position matches the data.
+  const moveTask=(id,dir)=>{
+    const list=[...(data.tasks[selectedDate]||[])];
+    const target=list.find(t=>t.id===id);
+    if(!target) return;
+    // Get only items in the same group (same done state) preserving order
+    const groupIndices=list.map((t,i)=>({t,i})).filter(x=>x.t.done===target.done);
+    const posInGroup=groupIndices.findIndex(x=>x.t.id===id);
+    const swapWith=posInGroup+dir;
+    if(swapWith<0||swapWith>=groupIndices.length) return;
+    const idxA=groupIndices[posInGroup].i;
+    const idxB=groupIndices[swapWith].i;
+    [list[idxA],list[idxB]]=[list[idxB],list[idxA]];
+    const nt={...data.tasks};
+    nt[selectedDate]=list;
+    save({...data,tasks:nt});
+  };
   const addTransaction=(tx)=>{
     const ntx={...data.transactions};
     ntx[selectedDate]=[...(ntx[selectedDate]||[]),{...tx,id:uid()}];
@@ -260,7 +278,8 @@ export default function App() {
       <main className="app-scroll" key={activeTab+(activeNote||"")}>
         {activeTab==="tasks" && (
           <TasksView tasks={todayTasks} newTask={newTask} setNewTask={setNewTask}
-            addTask={addTask} toggleTask={toggleTask} deleteTask={deleteTask} taskInputRef={taskInputRef}/>
+            addTask={addTask} toggleTask={toggleTask} deleteTask={deleteTask}
+            moveTask={moveTask} taskInputRef={taskInputRef}/>
         )}
         {activeTab==="agenda" && (
           <AgendaView events={data.events}
@@ -316,7 +335,7 @@ function NavBtn({id,label,icon,active,onClick,badge}){
 }
 
 // ── TASKS VIEW ────────────────────────────────────────────────────────────────
-function TasksView({tasks,newTask,setNewTask,addTask,toggleTask,deleteTask,taskInputRef}){
+function TasksView({tasks,newTask,setNewTask,addTask,toggleTask,deleteTask,moveTask,taskInputRef}){
   const pending=tasks.filter(t=>!t.done);
   const done=tasks.filter(t=>t.done);
   const pct=tasks.length?(done.length/tasks.length)*100:0;
@@ -343,13 +362,21 @@ function TasksView({tasks,newTask,setNewTask,addTask,toggleTask,deleteTask,taskI
       {pending.length>0&&(
         <section className="task-section">
           <h3 className="sec-label">Pendientes</h3>
-          {pending.map(t=><TaskCard key={t.id} task={t} onToggle={toggleTask} onDelete={deleteTask}/>)}
+          {pending.map((t,i)=>(
+            <TaskCard key={t.id} task={t}
+              onToggle={toggleTask} onDelete={deleteTask} onMove={moveTask}
+              canUp={i>0} canDown={i<pending.length-1}/>
+          ))}
         </section>
       )}
       {done.length>0&&(
         <section className="task-section" style={{opacity:0.55}}>
           <h3 className="sec-label">Completadas</h3>
-          {done.map(t=><TaskCard key={t.id} task={t} onToggle={toggleTask} onDelete={deleteTask}/>)}
+          {done.map((t,i)=>(
+            <TaskCard key={t.id} task={t}
+              onToggle={toggleTask} onDelete={deleteTask} onMove={moveTask}
+              canUp={i>0} canDown={i<done.length-1}/>
+          ))}
         </section>
       )}
       {tasks.length===0&&<Empty glyph="—" txt="Sin tareas para hoy" sub="Escribe arriba y pulsa Enter"/>}
@@ -357,17 +384,39 @@ function TasksView({tasks,newTask,setNewTask,addTask,toggleTask,deleteTask,taskI
   );
 }
 
-function TaskCard({task,onToggle,onDelete}){
+function TaskCard({task,onToggle,onDelete,onMove,canUp,canDown}){
+  const [open,setOpen]=useState(false);
   return(
-    <div className="task-card">
-      <button className="check-btn" onClick={()=>onToggle(task.id)}>
-        <div className={`check-ring${task.done?" done":""}`}/>
-      </button>
-      <div className="task-body">
-        <span className={`task-txt${task.done?" done":""}`}>{task.text}</span>
-        {task.carriedFrom&&<span className="carry-tag">⟲ {task.carriedFrom.slice(5)}</span>}
+    <div className={`task-card${open?" expanded":""}`}>
+      <div className="task-card-row">
+        <button className="check-btn" onClick={()=>onToggle(task.id)}>
+          <div className={`check-ring${task.done?" done":""}`}/>
+        </button>
+        <div className="task-body" onClick={()=>setOpen(o=>!o)}>
+          <span className={`task-txt${task.done?" done":""}`}>{task.text}</span>
+          {task.carriedFrom&&<span className="carry-tag">⟲ {task.carriedFrom.slice(5)}</span>}
+        </div>
+        <button
+          className={`task-chevron${open?" open":""}`}
+          onClick={()=>setOpen(o=>!o)}
+          aria-label={open?"Cerrar":"Reordenar"}
+        >▾</button>
+        <button className="task-del" onClick={()=>onDelete(task.id)}>×</button>
       </div>
-      <button className="task-del" onClick={()=>onDelete(task.id)}>×</button>
+      {open && (
+        <div className="task-reorder">
+          <button
+            className="reorder-btn"
+            disabled={!canUp}
+            onClick={()=>onMove(task.id,-1)}
+          >↑ Subir</button>
+          <button
+            className="reorder-btn"
+            disabled={!canDown}
+            onClick={()=>onMove(task.id,1)}
+          >↓ Bajar</button>
+        </div>
+      )}
     </div>
   );
 }
@@ -682,6 +731,7 @@ const CSS = `
 
   @keyframes spin { to { transform: rotate(360deg); } }
   @keyframes fadein { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:none; } }
+  @keyframes reorder-slide { from { opacity:0; transform:translateY(-4px); } to { opacity:1; transform:none; } }
 
   .app-root {
     width: 100%;
@@ -857,11 +907,20 @@ const CSS = `
     color: #3a3630; margin-bottom: 10px; padding-left: 2px;
   }
   .task-card {
-    display: flex; align-items: center; gap: 12px;
-    padding: 11px 12px; border-radius: 10px;
+    border-radius: 10px;
     background: rgba(255,255,255,0.025);
     border: 1px solid rgba(255,255,255,0.04);
     margin-bottom: 6px; width: 100%;
+    transition: background 0.15s, border-color 0.15s;
+    overflow: hidden;
+  }
+  .task-card.expanded {
+    background: rgba(240,168,50,0.04);
+    border-color: rgba(240,168,50,0.18);
+  }
+  .task-card-row {
+    display: flex; align-items: center; gap: 12px;
+    padding: 11px 12px;
   }
   .check-btn {
     background: none; border: none; cursor: pointer;
@@ -880,19 +939,55 @@ const CSS = `
     background-position: center;
     background-size: 10px;
   }
-  .task-body { flex: 1; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .task-body { flex: 1; display: flex; flex-direction: column; gap: 2px; min-width: 0; cursor: pointer; }
   .task-txt { font-size: 14px; color: #c8c0b0; line-height: 1.4; }
   .task-txt.done { text-decoration: line-through; color: #3a3630; }
   .carry-tag {
     font-family: 'DM Mono', monospace;
     font-size: 10px; color: #f0a83255;
   }
+  .task-chevron {
+    background: none; border: none; cursor: pointer;
+    color: #5a5248; font-size: 14px;
+    width: 24px; height: 24px;
+    display: flex; align-items: center; justify-content: center;
+    border-radius: 6px;
+    transition: transform 0.2s, color 0.15s, background 0.15s;
+    flex-shrink: 0;
+  }
+  .task-chevron:hover { color: #f0a832; background: rgba(240,168,50,0.08); }
+  .task-chevron.open { transform: rotate(180deg); color: #f0a832; }
   .task-del {
     background: none; border: none; color: #2a2620;
     font-size: 18px; cursor: pointer; padding: 0 4px;
     transition: color 0.15s; flex-shrink: 0;
   }
   .task-del:hover { color: #f87171; }
+  .task-reorder {
+    display: flex; gap: 8px;
+    padding: 0 12px 11px 44px;
+    animation: reorder-slide 0.18s ease;
+  }
+  .reorder-btn {
+    flex: 1; padding: 8px 10px;
+    background: rgba(240,168,50,0.08);
+    border: 1px solid rgba(240,168,50,0.18);
+    border-radius: 8px;
+    color: #f0a832; font-size: 12px; font-weight: 500;
+    font-family: 'Outfit', sans-serif;
+    cursor: pointer; letter-spacing: 0.02em;
+    transition: background 0.15s, border-color 0.15s, opacity 0.15s;
+  }
+  .reorder-btn:hover:not(:disabled) {
+    background: rgba(240,168,50,0.16);
+    border-color: rgba(240,168,50,0.35);
+  }
+  .reorder-btn:disabled {
+    opacity: 0.3; cursor: not-allowed;
+    color: #5a5248;
+    background: rgba(255,255,255,0.02);
+    border-color: rgba(255,255,255,0.04);
+  }
 
   /* NOTES */
   .notes-list { display: flex; flex-direction: column; gap: 8px; width: 100%; }
