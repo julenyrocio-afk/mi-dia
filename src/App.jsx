@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 
 const STORAGE_KEY = "planner-data-v4";
 
@@ -153,22 +153,39 @@ export default function App() {
     nt[selectedDate]=(nt[selectedDate]||[]).filter(t=>t.id!==id);
     save({...data,tasks:nt});
   };
-  // Move a task within its sub-group (pending or done) up or down.
-  // Reorders the underlying array so that the visual position matches the data.
-  const moveTask=(id,dir)=>{
+  // Reorder a task to an arbitrary position WITHIN its own group (pending/done).
+  // fromIdx and toIdx are indices into the filtered group array (not the full list).
+  const reorderTask=(group,fromIdx,toIdx)=>{
+    if(fromIdx===toIdx) return;
     const list=[...(data.tasks[selectedDate]||[])];
-    const target=list.find(t=>t.id===id);
-    if(!target) return;
-    // Get only items in the same group (same done state) preserving order
-    const groupIndices=list.map((t,i)=>({t,i})).filter(x=>x.t.done===target.done);
-    const posInGroup=groupIndices.findIndex(x=>x.t.id===id);
-    const swapWith=posInGroup+dir;
-    if(swapWith<0||swapWith>=groupIndices.length) return;
-    const idxA=groupIndices[posInGroup].i;
-    const idxB=groupIndices[swapWith].i;
-    [list[idxA],list[idxB]]=[list[idxB],list[idxA]];
+    // Indices in the full list that belong to this group, in current order
+    const groupPositions=list
+      .map((t,i)=>({t,i}))
+      .filter(x=>(group==="done")?x.t.done:!x.t.done)
+      .map(x=>x.i);
+    if(fromIdx<0||fromIdx>=groupPositions.length) return;
+    if(toIdx<0||toIdx>=groupPositions.length) return;
+    // Pull the moving task out of the list, reinsert at the target group slot
+    const movingFullIdx=groupPositions[fromIdx];
+    const moving=list[movingFullIdx];
+    const without=list.filter((_,i)=>i!==movingFullIdx);
+    // Recompute group positions in `without`
+    const newGroupPositions=without
+      .map((t,i)=>({t,i}))
+      .filter(x=>(group==="done")?x.t.done:!x.t.done)
+      .map(x=>x.i);
+    // Insert before the target slot. If toIdx === groupPositions.length - 1 we want last in group.
+    let insertAt;
+    if(toIdx>=newGroupPositions.length){
+      insertAt=newGroupPositions.length
+        ? newGroupPositions[newGroupPositions.length-1]+1
+        : without.length;
+    } else {
+      insertAt=newGroupPositions[toIdx];
+    }
+    without.splice(insertAt,0,moving);
     const nt={...data.tasks};
-    nt[selectedDate]=list;
+    nt[selectedDate]=without;
     save({...data,tasks:nt});
   };
   const addTransaction=(tx)=>{
@@ -279,7 +296,7 @@ export default function App() {
         {activeTab==="tasks" && (
           <TasksView tasks={todayTasks} newTask={newTask} setNewTask={setNewTask}
             addTask={addTask} toggleTask={toggleTask} deleteTask={deleteTask}
-            moveTask={moveTask} taskInputRef={taskInputRef}/>
+            reorderTask={reorderTask} taskInputRef={taskInputRef}/>
         )}
         {activeTab==="agenda" && (
           <AgendaView events={data.events}
@@ -335,7 +352,7 @@ function NavBtn({id,label,icon,active,onClick,badge}){
 }
 
 // ── TASKS VIEW ────────────────────────────────────────────────────────────────
-function TasksView({tasks,newTask,setNewTask,addTask,toggleTask,deleteTask,moveTask,taskInputRef}){
+function TasksView({tasks,newTask,setNewTask,addTask,toggleTask,deleteTask,reorderTask,taskInputRef}){
   const pending=tasks.filter(t=>!t.done);
   const done=tasks.filter(t=>t.done);
   const pct=tasks.length?(done.length/tasks.length)*100:0;
@@ -360,64 +377,123 @@ function TasksView({tasks,newTask,setNewTask,addTask,toggleTask,deleteTask,moveT
         </div>
       )}
       {pending.length>0&&(
-        <section className="task-section">
-          <h3 className="sec-label">Pendientes</h3>
-          {pending.map((t,i)=>(
-            <TaskCard key={t.id} task={t}
-              onToggle={toggleTask} onDelete={deleteTask} onMove={moveTask}
-              canUp={i>0} canDown={i<pending.length-1}/>
-          ))}
-        </section>
+        <TaskGroup
+          label="Pendientes"
+          items={pending}
+          group="pending"
+          onToggle={toggleTask}
+          onDelete={deleteTask}
+          onReorder={reorderTask}
+        />
       )}
       {done.length>0&&(
-        <section className="task-section" style={{opacity:0.55}}>
-          <h3 className="sec-label">Completadas</h3>
-          {done.map((t,i)=>(
-            <TaskCard key={t.id} task={t}
-              onToggle={toggleTask} onDelete={deleteTask} onMove={moveTask}
-              canUp={i>0} canDown={i<done.length-1}/>
-          ))}
-        </section>
+        <TaskGroup
+          label="Completadas"
+          items={done}
+          group="done"
+          onToggle={toggleTask}
+          onDelete={deleteTask}
+          onReorder={reorderTask}
+          dim
+        />
       )}
       {tasks.length===0&&<Empty glyph="—" txt="Sin tareas para hoy" sub="Escribe arriba y pulsa Enter"/>}
     </div>
   );
 }
 
-function TaskCard({task,onToggle,onDelete,onMove,canUp,canDown}){
-  const [open,setOpen]=useState(false);
+// Group with free drag-and-drop reordering (mouse + touch).
+function TaskGroup({label,items,group,onToggle,onDelete,onReorder,dim}){
+  const [dragIdx,setDragIdx]=useState(null);
+  const [overIdx,setOverIdx]=useState(null); // slot index 0..items.length
+  const containerRef=useRef(null);
+  const itemRefs=useRef([]);
+
+  // Compute the slot the pointer is currently over given a Y coordinate.
+  const slotForY=(clientY)=>{
+    const rects=itemRefs.current.map(el=>el?.getBoundingClientRect()).filter(Boolean);
+    if(!rects.length) return 0;
+    for(let i=0;i<rects.length;i++){
+      const r=rects[i];
+      const mid=r.top+r.height/2;
+      if(clientY<mid) return i;
+    }
+    return rects.length;
+  };
+
+  // Pointer events handle both mouse and touch
+  const onPointerDown=(e,idx)=>{
+    e.preventDefault();
+    setDragIdx(idx);
+    setOverIdx(idx);
+    const move=(ev)=>{
+      const y=ev.touches?ev.touches[0].clientY:ev.clientY;
+      setOverIdx(slotForY(y));
+    };
+    const end=()=>{
+      window.removeEventListener("pointermove",move);
+      window.removeEventListener("pointerup",end);
+      window.removeEventListener("touchmove",move);
+      window.removeEventListener("touchend",end);
+      setDragIdx(curDrag=>{
+        setOverIdx(curOver=>{
+          if(curDrag!=null && curOver!=null){
+            // Adjust target index since removing source shifts items above
+            let target=curOver;
+            if(target>curDrag) target-=1;
+            if(target!==curDrag) onReorder(group,curDrag,target);
+          }
+          return null;
+        });
+        return null;
+      });
+    };
+    window.addEventListener("pointermove",move,{passive:false});
+    window.addEventListener("pointerup",end);
+    window.addEventListener("touchmove",move,{passive:false});
+    window.addEventListener("touchend",end);
+  };
+
   return(
-    <div className={`task-card${open?" expanded":""}`}>
-      <div className="task-card-row">
-        <button className="check-btn" onClick={()=>onToggle(task.id)}>
-          <div className={`check-ring${task.done?" done":""}`}/>
-        </button>
-        <div className="task-body" onClick={()=>setOpen(o=>!o)}>
-          <span className={`task-txt${task.done?" done":""}`}>{task.text}</span>
-          {task.carriedFrom&&<span className="carry-tag">⟲ {task.carriedFrom.slice(5)}</span>}
-        </div>
-        <button
-          className={`task-chevron${open?" open":""}`}
-          onClick={()=>setOpen(o=>!o)}
-          aria-label={open?"Cerrar":"Reordenar"}
-        >▾</button>
-        <button className="task-del" onClick={()=>onDelete(task.id)}>×</button>
+    <section className="task-section" style={dim?{opacity:0.55}:undefined}>
+      <h3 className="sec-label">{label}</h3>
+      <div ref={containerRef} className="task-list">
+        {items.map((t,i)=>(
+          <React.Fragment key={t.id}>
+            {dragIdx!=null && overIdx===i && dragIdx!==i && dragIdx!==i-1 && (
+              <div className="drop-indicator"/>
+            )}
+            <div
+              ref={el=>itemRefs.current[i]=el}
+              className={`task-card${dragIdx===i?" dragging":""}`}
+            >
+              <div className="task-card-row">
+                <button
+                  className="drag-handle"
+                  onPointerDown={e=>onPointerDown(e,i)}
+                  onTouchStart={e=>e.preventDefault()}
+                  aria-label="Arrastrar para reordenar"
+                  title="Arrastrar para reordenar"
+                >
+                  <span/><span/><span/>
+                </button>
+                <button className="check-btn" onClick={()=>onToggle(t.id)}>
+                  <div className={`check-ring${t.done?" done":""}`}/>
+                </button>
+                <div className="task-body">
+                  <span className={`task-txt${t.done?" done":""}`}>{t.text}</span>
+                  {t.carriedFrom&&<span className="carry-tag">⟲ {t.carriedFrom.slice(5)}</span>}
+                </div>
+                <button className="task-del" onClick={()=>onDelete(t.id)}>×</button>
+              </div>
+            </div>
+          </React.Fragment>
+        ))}
+        {dragIdx!=null && overIdx===items.length && dragIdx!==items.length-1 && (
+          <div className="drop-indicator"/>
+        )}
       </div>
-      {open && (
-        <div className="task-reorder">
-          <button
-            className="reorder-btn"
-            disabled={!canUp}
-            onClick={()=>onMove(task.id,-1)}
-          >↑ Subir</button>
-          <button
-            className="reorder-btn"
-            disabled={!canDown}
-            onClick={()=>onMove(task.id,1)}
-          >↓ Bajar</button>
-        </div>
-      )}
-    </div>
+    </section>
   );
 }
 
@@ -906,21 +982,52 @@ const CSS = `
     letter-spacing: 0.15em; text-transform: uppercase;
     color: #3a3630; margin-bottom: 10px; padding-left: 2px;
   }
+  .task-list { display: flex; flex-direction: column; width: 100%; }
   .task-card {
     border-radius: 10px;
     background: rgba(255,255,255,0.025);
     border: 1px solid rgba(255,255,255,0.04);
     margin-bottom: 6px; width: 100%;
-    transition: background 0.15s, border-color 0.15s;
+    transition: background 0.15s, border-color 0.15s, opacity 0.15s, transform 0.15s;
     overflow: hidden;
+    touch-action: pan-y;
   }
-  .task-card.expanded {
-    background: rgba(240,168,50,0.04);
-    border-color: rgba(240,168,50,0.18);
+  .task-card.dragging {
+    opacity: 0.4;
+    background: rgba(240,168,50,0.08);
+    border-color: rgba(240,168,50,0.3);
+    transform: scale(0.98);
   }
   .task-card-row {
-    display: flex; align-items: center; gap: 12px;
+    display: flex; align-items: center; gap: 10px;
     padding: 11px 12px;
+  }
+  .drag-handle {
+    background: none; border: none; cursor: grab;
+    padding: 4px 4px; flex-shrink: 0;
+    display: flex; flex-direction: column; gap: 3px;
+    align-items: center; justify-content: center;
+    touch-action: none;
+    border-radius: 6px;
+    transition: background 0.15s;
+  }
+  .drag-handle:hover { background: rgba(240,168,50,0.08); }
+  .drag-handle:active { cursor: grabbing; }
+  .drag-handle span {
+    display: block;
+    width: 14px; height: 2px;
+    background: #5a5248;
+    border-radius: 2px;
+    transition: background 0.15s;
+  }
+  .drag-handle:hover span { background: #f0a832; }
+  .drop-indicator {
+    height: 2px;
+    background: #f0a832;
+    border-radius: 2px;
+    margin: 2px 0 4px;
+    box-shadow: 0 0 8px rgba(240,168,50,0.6);
+    animation: fadein 0.12s ease;
   }
   .check-btn {
     background: none; border: none; cursor: pointer;
@@ -939,55 +1046,19 @@ const CSS = `
     background-position: center;
     background-size: 10px;
   }
-  .task-body { flex: 1; display: flex; flex-direction: column; gap: 2px; min-width: 0; cursor: pointer; }
+  .task-body { flex: 1; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
   .task-txt { font-size: 14px; color: #c8c0b0; line-height: 1.4; }
   .task-txt.done { text-decoration: line-through; color: #3a3630; }
   .carry-tag {
     font-family: 'DM Mono', monospace;
     font-size: 10px; color: #f0a83255;
   }
-  .task-chevron {
-    background: none; border: none; cursor: pointer;
-    color: #5a5248; font-size: 14px;
-    width: 24px; height: 24px;
-    display: flex; align-items: center; justify-content: center;
-    border-radius: 6px;
-    transition: transform 0.2s, color 0.15s, background 0.15s;
-    flex-shrink: 0;
-  }
-  .task-chevron:hover { color: #f0a832; background: rgba(240,168,50,0.08); }
-  .task-chevron.open { transform: rotate(180deg); color: #f0a832; }
   .task-del {
     background: none; border: none; color: #2a2620;
     font-size: 18px; cursor: pointer; padding: 0 4px;
     transition: color 0.15s; flex-shrink: 0;
   }
   .task-del:hover { color: #f87171; }
-  .task-reorder {
-    display: flex; gap: 8px;
-    padding: 0 12px 11px 44px;
-    animation: reorder-slide 0.18s ease;
-  }
-  .reorder-btn {
-    flex: 1; padding: 8px 10px;
-    background: rgba(240,168,50,0.08);
-    border: 1px solid rgba(240,168,50,0.18);
-    border-radius: 8px;
-    color: #f0a832; font-size: 12px; font-weight: 500;
-    font-family: 'Outfit', sans-serif;
-    cursor: pointer; letter-spacing: 0.02em;
-    transition: background 0.15s, border-color 0.15s, opacity 0.15s;
-  }
-  .reorder-btn:hover:not(:disabled) {
-    background: rgba(240,168,50,0.16);
-    border-color: rgba(240,168,50,0.35);
-  }
-  .reorder-btn:disabled {
-    opacity: 0.3; cursor: not-allowed;
-    color: #5a5248;
-    background: rgba(255,255,255,0.02);
-    border-color: rgba(255,255,255,0.04);
-  }
 
   /* NOTES */
   .notes-list { display: flex; flex-direction: column; gap: 8px; width: 100%; }
